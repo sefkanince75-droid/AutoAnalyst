@@ -62,7 +62,7 @@ from src.upload_processing import UploadCaptureError, capture_uploads
 
 
 st.set_page_config(page_title="AutoAnalyst", page_icon="📊", layout="wide")
-APP_VERSION = "AutoAnalyst v1.1.0-dev"
+APP_VERSION = "AutoAnalyst v1.1.0"
 language_options = {
     "English": "en",
     "Türkçe": "tr",

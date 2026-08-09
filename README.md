@@ -1,4 +1,4 @@
-# AutoAnalyst v1.1.0-dev
+# AutoAnalyst v1.1.0
 
 AutoAnalyst is a local-first Streamlit application for deterministic tabular binary-classification workflows. Python performs all numerical and statistical work locally.
 
