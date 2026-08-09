@@ -3,17 +3,41 @@
 from __future__ import annotations
 
 from functools import partial
-
+from io import BytesIO
 import pandas as pd
 import streamlit as st
 
-from src.data_loader import CSVLoadError, load_csv
+from src.data_loader import (
+    CSVLoadError,
+    EmptyWorksheetError,
+    ExcelDependencyError,
+    ExcelLoadError,
+    UnsupportedFileTypeError,
+    detect_file_type,
+    list_excel_sheets,
+    load_csv,
+    load_excel_sheet,
+)
+from src.data_quality import build_data_quality_findings
+from src.dataset_combination import (
+    DatasetPart,
+    combine_row_wise,
+    dataframe_memory_bytes,
+    dataset_identity,
+    human_readable_bytes,
+    validate_schema_compatibility,
+)
 from src.diagnostics import binary_target_candidates, diagnose_dataset, validate_binary_target
 from src.evaluation import (
     compare_models_on_validation,
     comparison_table,
     plot_precision_recall_curves,
     plot_roc_curves,
+)
+from src.evaluation_sample import (
+    diagnose_binary_partition,
+    should_render_final_test_warning,
+    should_render_validation_warning,
 )
 from src.final_evaluation import evaluate_locked_model_on_test
 from src.i18n import translate
@@ -28,12 +52,27 @@ from src.reporting import (
 )
 from src.splitting import SplitError, split_class_summary, stratified_train_validation_test_split
 from src.thresholding import optimize_model_thresholds, plot_threshold_tradeoff, recommend_model
-from src.ui_state import ANALYSIS_STATE_KEYS, reset_analysis_state, workflow_stage
+from src.ui_state import (
+    ANALYSIS_STATE_KEYS,
+    invalidate_for_dataset_change,
+    reset_analysis_state,
+    workflow_stage,
+)
+from src.upload_processing import UploadCaptureError, capture_uploads
 
 
 st.set_page_config(page_title="AutoAnalyst", page_icon="📊", layout="wide")
-language_name = st.sidebar.selectbox("Language / Dil", ["English", "Türkçe"], key="language")
-language = "en" if language_name == "English" else "tr"
+APP_VERSION = "AutoAnalyst v1.1.0-dev"
+language_options = {
+    "English": "en",
+    "Türkçe": "tr",
+    "Deutsch": "de",
+    "Français": "fr",
+    "Español": "es",
+}
+saved_language = language_options.get(st.session_state.get("language", "English"), "en")
+language_name = st.sidebar.selectbox(translate(saved_language, "language"), list(language_options), key="language")
+language = language_options[language_name]
 t = partial(translate, language)
 analysis_nonce = int(st.session_state.get("analysis_nonce", 0))
 
@@ -74,8 +113,14 @@ def render_metric_guide() -> None:
 
 
 def render_about() -> None:
-    """Place stable V1 limitations at the bottom of the currently visible flow."""
+    """Place stable V1.1 limitations at the bottom of the visible flow."""
     with st.expander(t("about_limitations")):
+        st.write(f"**{t('about_version')}:** {APP_VERSION}")
+        st.write(f"**{t('about_formats')}:** CSV, XLSX")
+        st.write(f"**{t('about_analysis')}:** {t('about_binary')}")
+        st.write(f"**{t('about_languages')}:** English, Türkçe, Deutsch, Français, Español")
+        st.write(t("privacy_message"))
+        st.divider()
         for key in (
             "limitation_scope",
             "limitation_cv",
@@ -87,11 +132,18 @@ def render_about() -> None:
 
 
 st.title(t("title"))
-st.caption(t("subtitle"))
+st.caption(f"{APP_VERSION} · {t('subtitle')}")
 progress_slot = st.container()
 
-uploaded_file = st.file_uploader(t("upload"), type=["csv"], key=f"uploader_{analysis_nonce}")
-if uploaded_file is None:
+st.info(t("privacy_message"))
+st.caption(t("upload_limit_note"))
+uploaded_files = st.file_uploader(
+    t("upload_v11_multi"),
+    type=["csv", "xlsx"],
+    accept_multiple_files=True,
+    key=f"uploader_{analysis_nonce}",
+)
+if not uploaded_files:
     with progress_slot:
         render_workflow(0)
     st.info(t("upload_hint"))
@@ -99,20 +151,219 @@ if uploaded_file is None:
     st.stop()
 
 try:
-    with st.spinner(t("reading")):
-        dataframe = load_csv(uploaded_file)
+    uploaded_records = capture_uploads(uploaded_files)
+except MemoryError:
+    st.error(t("memory_error"))
+    render_about()
+    st.stop()
+except UploadCaptureError:
+    st.error(t("error_upload_capture"))
+    render_about()
+    st.stop()
+total_uploaded_bytes = sum(record.size_bytes for record in uploaded_records)
+st.markdown(f"#### {t('uploaded_sources')}")
+st.dataframe(
+    pd.DataFrame(
+        [
+            {t("source_file"): record.name, t("source_size"): human_readable_bytes(record.size_bytes)}
+            for record in uploaded_records
+        ]
+    ),
+    use_container_width=True,
+    hide_index=True,
+)
+st.caption(t("total_uploaded_size", size=human_readable_bytes(total_uploaded_bytes)))
+if total_uploaded_bytes >= 1024**3:
+    st.warning(t("large_upload_warning"))
+
+mode = "single"
+if len(uploaded_records) > 1:
+    mode = st.radio(
+        t("dataset_mode"),
+        ["single", "combine"],
+        format_func=lambda value: t(f"mode_{value}"),
+        horizontal=True,
+        key=f"mode_{analysis_nonce}",
+    )
+if mode == "single":
+    selected_index = 0
+    if len(uploaded_records) > 1:
+        selected_index = st.selectbox(
+            t("select_file"),
+            range(len(uploaded_records)),
+            format_func=lambda index: uploaded_records[index].name,
+            key=f"selected_file_{analysis_nonce}",
+        )
+    active_records = [uploaded_records[selected_index]]
+    add_source_column = False
+else:
+    active_records = uploaded_records
+    add_source_column = st.checkbox(
+        t("add_source_column"),
+        value=True,
+        help=t("add_source_column_help"),
+        key=f"source_column_{analysis_nonce}",
+    )
+
+part_specs: list[tuple[object, str | None]] = []
+try:
+    for record in active_records:
+        content = record.content
+        worksheet: str | None = None
+        if detect_file_type(record.name) == "XLSX":
+            with st.spinner(t("reading_workbook_named", file=record.name)):
+                worksheet_names = list_excel_sheets(content)
+            if len(worksheet_names) == 1:
+                worksheet = worksheet_names[0]
+                st.caption(t("worksheet_detected_named", file=record.name, worksheet=worksheet))
+            else:
+                worksheet = st.selectbox(
+                    t("worksheet_select_named", file=record.name),
+                    worksheet_names,
+                    index=None,
+                    placeholder=t("worksheet_placeholder"),
+                    key=f"worksheet_{analysis_nonce}_{record.digest[:12]}",
+                )
+                if worksheet is None:
+                    with progress_slot:
+                        render_workflow(0)
+                    st.info(t("worksheet_required_named", file=record.name))
+                    render_about()
+                    st.stop()
+        part_specs.append((record, worksheet))
+
+    identity_parts = [
+        DatasetPart(
+            spec[0].name,
+            spec[0].digest,
+            spec[0].size_bytes,
+            pd.DataFrame(),
+            spec[1],
+        )
+        for spec in part_specs
+    ]
+    active_dataset_identity = dataset_identity(
+        identity_parts,
+        mode=mode,
+        add_source_column=add_source_column,
+    )
+    invalidate_for_dataset_change(st.session_state, active_dataset_identity)
+
+    loaded_parts: list[DatasetPart] = []
+    for record, worksheet in part_specs:
+        content = record.content
+        if detect_file_type(record.name) == "CSV":
+            with st.spinner(t("reading_csv_named", file=record.name)):
+                frame = load_csv(BytesIO(content))
+        else:
+            with st.spinner(t("loading_worksheet_named", file=record.name, worksheet=worksheet)):
+                frame = load_excel_sheet(content, worksheet)
+        loaded_parts.append(
+            DatasetPart(record.name, record.digest, record.size_bytes, frame, worksheet)
+        )
+except UnsupportedFileTypeError:
+    with progress_slot:
+        render_workflow(0)
+    st.error(t("error_unsupported"))
+    render_about()
+    st.stop()
 except CSVLoadError:
     with progress_slot:
         render_workflow(0)
-    st.error(t("upload_hint"))
+    st.error(t("error_csv"))
+    render_about()
+    st.stop()
+except EmptyWorksheetError:
+    with progress_slot:
+        render_workflow(0)
+    st.error(t("error_empty_worksheet"))
+    render_about()
+    st.stop()
+except ExcelDependencyError:
+    with progress_slot:
+        render_workflow(0)
+    st.error(t("error_excel_dependency"))
+    render_about()
+    st.stop()
+except ExcelLoadError:
+    with progress_slot:
+        render_workflow(0)
+    st.error(t("error_excel"))
+    render_about()
+    st.stop()
+except MemoryError:
+    with progress_slot:
+        render_workflow(0)
+    st.error(t("memory_error"))
     render_about()
     st.stop()
 
+selected_worksheet = loaded_parts[0].worksheet if mode == "single" else None
+source_count = len(loaded_parts)
+if mode == "combine":
+    schema_report = validate_schema_compatibility(loaded_parts)
+    st.markdown(f"#### {t('combination_preview')}")
+    st.write(f"**{t('source_count')}:** {len(loaded_parts)}")
+    preview_rows = [
+        {
+            t("source_file"): part.file_name,
+            t("source_worksheet"): part.worksheet or t("not_applicable"),
+            t("rows"): len(part.dataframe),
+            t("columns"): len(part.dataframe.columns),
+            t("schema_status"): t("schema_compatible") if schema_report.differences[index].is_compatible else t("schema_incompatible"),
+        }
+        for index, part in enumerate(loaded_parts)
+    ]
+    st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
+    st.write(t("estimated_combined_rows", rows=sum(len(part.dataframe) for part in loaded_parts)))
+    if not schema_report.is_compatible:
+        for difference in schema_report.differences:
+            for column in difference.missing_columns:
+                st.error(t("schema_missing", file=difference.file_name, column=column))
+            for column in difference.additional_columns:
+                st.error(t("schema_additional", file=difference.file_name, column=column))
+            for column, expected, actual in difference.incompatible_types:
+                st.error(t("schema_dtype", file=difference.file_name, column=column, expected=expected, actual=actual))
+        render_about()
+        st.stop()
+    st.success(t("schema_all_compatible"))
+    if st.session_state.get("approved_combination_identity") != active_dataset_identity:
+        if st.button(t("create_combined_dataset"), type="primary"):
+            st.session_state.approved_combination_identity = active_dataset_identity
+            st.rerun()
+        render_about()
+        st.stop()
+    try:
+        with st.spinner(t("combining_datasets")):
+            combined = combine_row_wise(loaded_parts, add_source_column=add_source_column)
+            dataframe = combined.dataframe
+    except MemoryError:
+        st.error(t("memory_error"))
+        render_about()
+        st.stop()
+    dataset_display_name = t("combined_dataset")
+    source_type_display = t("multiple_formats")
+    generated_source_column = combined.source_column
+else:
+    dataframe = loaded_parts[0].dataframe
+    dataset_display_name = loaded_parts[0].file_name
+    source_type_display = detect_file_type(loaded_parts[0].file_name)
+    generated_source_column = None
+
+dataframe_memory = dataframe_memory_bytes(dataframe)
+if dataframe_memory >= 1024**3:
+    st.warning(t("large_dataset_warning"))
+
 st.subheader(t("overview"))
-row_col, column_col, duplicate_col = st.columns(3)
-row_col.metric(t("rows"), f"{len(dataframe):,}")
-column_col.metric(t("columns"), f"{len(dataframe.columns):,}")
-duplicate_col.metric(t("duplicates"), f"{dataframe.duplicated().sum():,}")
+source_columns = st.columns(6)
+source_columns[0].metric(t("source_file"), dataset_display_name)
+source_columns[1].metric(t("source_type"), source_type_display)
+source_columns[2].metric(t("source_count"), source_count)
+source_columns[3].metric(t("rows"), f"{len(dataframe):,}")
+source_columns[4].metric(t("columns"), f"{len(dataframe.columns):,}")
+source_columns[5].metric(t("memory_usage"), human_readable_bytes(dataframe_memory))
+if generated_source_column:
+    st.info(t("source_column_generated", column=generated_source_column))
 with st.expander(t("preview")):
     st.dataframe(dataframe.head(10), use_container_width=True)
     schema = dataframe.dtypes.astype(str).rename(t("dtype")).to_frame()
@@ -160,7 +411,7 @@ if not target_validation.is_valid:
     render_about()
     st.stop()
 
-analysis_key = (uploaded_file.name, uploaded_file.size, target)
+analysis_key = (active_dataset_identity, target)
 if st.session_state.get("analysis_key") != analysis_key:
     for state_key in ANALYSIS_STATE_KEYS - {"analysis_key"}:
         st.session_state.pop(state_key, None)
@@ -197,6 +448,23 @@ elif diagnostics.class_imbalance:
     st.warning(t("imbalance"))
 else:
     st.info(t("no_imbalance"))
+
+st.markdown(f"#### {t('quality_title')}")
+quality_findings = build_data_quality_findings(dataframe, diagnostics)
+quality_rows = []
+for finding in quality_findings:
+    status_key = {"ok": "quality_status_ok", "warning": "quality_status_warning", "issue": "quality_status_issue"}[finding.severity]
+    quality_rows.append(
+        {
+            t("quality_status"): t(status_key),
+            t("quality_finding"): t(finding.message_key, count=finding.count),
+            t("quality_columns"): ", ".join(finding.columns) if finding.columns else t("none"),
+        }
+    )
+st.dataframe(pd.DataFrame(quality_rows), use_container_width=True, hide_index=True)
+if diagnostics.possible_id_columns:
+    st.warning(t("id_warning", columns=", ".join(diagnostics.possible_id_columns)))
+st.caption(t("quality_no_changes"))
 
 left, right = st.columns(2)
 with left:
@@ -247,6 +515,9 @@ localized_split_summary = split_class_summary(splits).rename(
     }
 )
 st.dataframe(localized_split_summary, use_container_width=True, hide_index=True)
+positive_class = sorted(dataframe[target].dropna().unique())[-1]
+validation_sample = diagnose_binary_partition(splits.y_validation, positive_class)
+final_test_sample = diagnose_binary_partition(splits.y_test, positive_class)
 
 st.subheader(t("preprocessing"))
 with st.spinner(t("preprocessing_status")):
@@ -263,7 +534,40 @@ with st.expander(t("methodology")):
     st.write(t("preprocessing_detail"))
     st.success(t("preprocessing_safe"))
 
+configured_minimum_recall = float(st.session_state.get("minimum_recall_control", 0.85))
+st.markdown(f"#### {t('configuration_summary')}")
+configuration_rows = [
+    (t("source_file"), dataset_display_name),
+    (t("source_worksheet"), selected_worksheet or (t("multiple_selected_worksheets") if mode == "combine" else t("not_applicable"))),
+    (t("report_target"), target),
+    (t("positive_class"), str(positive_class)),
+    (t("configuration_shape"), f"{len(dataframe):,} × {len(dataframe.columns):,}"),
+    (t("split_strategy"), "70% / 15% / 15%"),
+    (t("minimum_recall"), f"{configured_minimum_recall:.2f}"),
+    (t("numerical"), str(len(fitted_preprocessor.numerical_columns))),
+    (t("categorical"), str(len(fitted_preprocessor.categorical_columns))),
+]
+configuration_columns = st.columns(2)
+for index, (label, value) in enumerate(configuration_rows):
+    configuration_columns[index % 2].write(f"**{label}:** {value}")
+
 st.subheader(t("baseline_title"))
+if should_render_validation_warning(validation_sample):
+    st.warning(
+        t(
+            "validation_sample_warning",
+            positive=validation_sample.positive_count,
+            negative=validation_sample.negative_count,
+        )
+    )
+    if validation_sample.recall_resolution is not None:
+        st.warning(
+            t(
+                "validation_recall_resolution",
+                positive=validation_sample.positive_count,
+                resolution=validation_sample.recall_resolution,
+            )
+        )
 if diagnostics.severe_class_imbalance:
     st.info(t("metric_warning"))
 else:
@@ -355,6 +659,7 @@ minimum_recall = st.slider(
     step=0.01,
     help=t("help_minimum_recall"),
     disabled=final_result is not None,
+    key="minimum_recall_control",
 )
 if "optimized_minimum_recall" in st.session_state and st.session_state.optimized_minimum_recall != minimum_recall:
     for state_key in {
@@ -490,6 +795,26 @@ if final_result is None:
     st.stop()
 
 st.subheader(t("final_performance"))
+if should_render_final_test_warning(final_test_sample):
+    st.warning(
+        t(
+            "final_sample_warning",
+            positive=final_test_sample.positive_count,
+            negative=final_test_sample.negative_count,
+            tp=final_result.true_positives,
+            fn=final_result.false_negatives,
+            fp=final_result.false_positives,
+            tn=final_result.true_negatives,
+        )
+    )
+    st.warning(
+        t(
+            "final_recall_basis",
+            recall=final_result.recall,
+            detected=final_result.true_positives,
+            positive=final_test_sample.positive_count,
+        )
+    )
 st.caption(t("validation_selected"))
 st.markdown(f"**{t('model')}:** {locked_model_name}  \n**{t('selected_threshold')}:** {locked_threshold:.6f}  \n**{t('minimum_recall')}:** {minimum_recall:.2f}")
 
@@ -541,7 +866,7 @@ for result in threshold_results.values():
         )
 canonical_threshold = pd.DataFrame(canonical_threshold_rows)
 report_data = ReportData(
-    dataset_name=uploaded_file.name,
+    dataset_name=dataset_display_name,
     dataset_rows=len(dataframe),
     dataset_columns=len(dataframe.columns),
     target_name=target,
@@ -568,6 +893,8 @@ report_data = ReportData(
     recommended_model=locked_model_name,
     selected_threshold=locked_threshold,
     final_result=final_result,
+    validation_sample=validation_sample,
+    final_test_sample=final_test_sample,
 )
 
 st.subheader(t("exports"))

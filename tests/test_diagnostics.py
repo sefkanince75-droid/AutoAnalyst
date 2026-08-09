@@ -1,6 +1,12 @@
 import pandas as pd
 
-from src.diagnostics import binary_target_candidates, detect_imbalance, diagnose_dataset, validate_binary_target
+from src.diagnostics import (
+    binary_target_candidates,
+    detect_imbalance,
+    detect_possible_id_columns,
+    diagnose_dataset,
+    validate_binary_target,
+)
 
 
 def test_binary_target_validation_accepts_two_adequate_classes() -> None:
@@ -62,3 +68,19 @@ def test_binary_target_candidates_can_return_one_or_none() -> None:
     none = pd.DataFrame({"feature": [1, 2, 3], "constant": [0, 0, 0]})
     assert binary_target_candidates(one) == ["target"]
     assert binary_target_candidates(none) == []
+
+
+def test_possible_id_detection_is_conservative() -> None:
+    dataframe = pd.DataFrame(
+        {
+            "transaction_id": [f"tx-{index}" for index in range(100)],
+            "free_text_key": [f"value-{index}" for index in range(100)],
+            "continuous_measure": list(range(100)),
+            "category": ["a", "b"] * 50,
+        }
+    )
+    detected = detect_possible_id_columns(dataframe)
+    assert "transaction_id" in detected
+    assert "free_text_key" in detected
+    assert "continuous_measure" not in detected
+    assert "category" not in detected

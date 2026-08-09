@@ -11,6 +11,7 @@ import pandas as pd
 from sklearn.pipeline import Pipeline
 
 from src.final_evaluation import FinalTestResult
+from src.evaluation_sample import EvaluationSampleDiagnostic
 from src.i18n import translate
 
 
@@ -36,6 +37,8 @@ class ReportData:
     recommended_model: str
     selected_threshold: float
     final_result: FinalTestResult
+    validation_sample: EvaluationSampleDiagnostic
+    final_test_sample: EvaluationSampleDiagnostic
 
 
 def _dataframe_to_markdown(dataframe: pd.DataFrame, *, include_index: bool = False) -> str:
@@ -80,6 +83,38 @@ def generate_markdown_report(data: ReportData, language: str) -> str:
     target_table = _dataframe_to_markdown(data.target_distribution, include_index=True)
     baseline_table = _dataframe_to_markdown(data.baseline_comparison)
     threshold_table = _dataframe_to_markdown(data.threshold_comparison)
+    validation_sample_note = ""
+    if data.validation_sample.limited_sample:
+        validation_sample_note = "\n\n" + t(
+            "report_validation_sample",
+            positive=data.validation_sample.positive_count,
+            negative=data.validation_sample.negative_count,
+        )
+        validation_sample_note += "\n\n" + t("report_sample_limitation")
+        if data.validation_sample.recall_resolution is not None:
+            validation_sample_note += "\n\n" + t(
+                "validation_recall_resolution",
+                positive=data.validation_sample.positive_count,
+                resolution=data.validation_sample.recall_resolution,
+            )
+    final_sample_note = ""
+    if data.final_test_sample.limited_sample:
+        final_sample_note = "\n\n" + t(
+            "report_final_sample",
+            positive=data.final_test_sample.positive_count,
+            negative=data.final_test_sample.negative_count,
+            tp=result.true_positives,
+            fn=result.false_negatives,
+            fp=result.false_positives,
+            tn=result.true_negatives,
+        )
+        final_sample_note += "\n\n" + t(
+            "final_recall_basis",
+            recall=result.recall,
+            detected=result.true_positives,
+            positive=data.final_test_sample.positive_count,
+        )
+        final_sample_note += "\n\n" + t("report_sample_limitation")
     return f"""# AutoAnalyst — {t('report_title')}
 
 ## {t('report_dataset')}
@@ -103,7 +138,7 @@ def generate_markdown_report(data: ReportData, language: str) -> str:
 
 ## {t('validation_comparison')}
 
-{baseline_table}
+{baseline_table}{validation_sample_note}
 
 ## {t('report_operational')}
 
@@ -116,6 +151,7 @@ def generate_markdown_report(data: ReportData, language: str) -> str:
 ## {t('report_final')}
 
 {t('report_locked_note')}
+{final_sample_note}
 
 | {t('report_metric')} | {t('report_value')} |
 |---|---:|

@@ -20,6 +20,14 @@ ANALYSIS_STATE_KEYS = {
     "model_package_bytes",
 }
 
+DATASET_STATE_KEYS = {
+    "dataset_identity",
+    "prepared_dataset_identity",
+    "prepared_dataframe",
+    "prepared_source_metadata",
+    "approved_combination_identity",
+}
+
 
 def workflow_stage(
     *,
@@ -42,6 +50,27 @@ def reset_analysis_state(state: MutableMapping[str, Any]) -> None:
     """Clear analysis/widget state and rotate the uploader key for a fresh workflow."""
     next_nonce = int(state.get("analysis_nonce", 0)) + 1
     for key in list(state):
-        if key in ANALYSIS_STATE_KEYS or key.startswith("target_") or key.startswith("uploader_"):
+        if (
+            key in ANALYSIS_STATE_KEYS
+            or key in DATASET_STATE_KEYS
+            or key.startswith("target_")
+            or key.startswith("uploader_")
+            or key.startswith("worksheet_")
+            or key.startswith("mode_")
+            or key.startswith("selected_file_")
+            or key.startswith("source_column_")
+            or key == "minimum_recall_control"
+        ):
             state.pop(key, None)
     state["analysis_nonce"] = next_nonce
+
+
+def invalidate_for_dataset_change(state: MutableMapping[str, Any], new_identity: str) -> bool:
+    """Clear analysis results and target widgets when the active dataset changes."""
+    if state.get("dataset_identity") == new_identity:
+        return False
+    for key in list(state):
+        if key in ANALYSIS_STATE_KEYS or key in DATASET_STATE_KEYS or key.startswith("target_"):
+            state.pop(key, None)
+    state["dataset_identity"] = new_identity
+    return True

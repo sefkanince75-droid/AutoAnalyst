@@ -3,9 +3,12 @@ from io import BytesIO
 import joblib
 import numpy as np
 import pandas as pd
+import pytest
 from sklearn.datasets import make_classification
 
 from src.final_evaluation import FinalTestResult
+from src.evaluation_sample import diagnose_evaluation_sample
+from src.i18n import translate
 from src.models import train_baseline_models
 from src.reporting import ReportData, generate_markdown_report, serialize_model_package
 
@@ -50,6 +53,8 @@ def _report_data() -> ReportData:
         recommended_model="Logistic Regression",
         selected_threshold=0.7,
         final_result=_final_result(),
+        validation_sample=diagnose_evaluation_sample(20, 130),
+        final_test_sample=diagnose_evaluation_sample(20, 130),
     )
 
 
@@ -70,6 +75,30 @@ def test_markdown_report_is_localized() -> None:
     assert "Yöntemsel sınırlamalar" in turkish
     assert "Analiz Raporu" in turkish
     assert english != turkish
+
+
+def test_markdown_report_supports_v11_languages() -> None:
+    german = generate_markdown_report(_report_data(), "de")
+    french = generate_markdown_report(_report_data(), "fr")
+    spanish = generate_markdown_report(_report_data(), "es")
+    assert "Analysebericht" in german
+    assert "Rapport d’analyse" in french
+    assert "Informe de análisis" in spanish
+
+
+def test_markdown_report_distinguishes_metric_sample_and_limitation() -> None:
+    report = generate_markdown_report(_report_data(), "en")
+    assert "Validation metric support: 20 positive and 130 negative cases" in report
+    assert "Final-test metric support: 20 positive and 130 negative cases" in report
+    assert "Final-test Recall is 0.7500, based on 15/20 positive cases detected" in report
+    assert "mathematically valid for this sample" in report
+
+
+@pytest.mark.parametrize("language", ["en", "tr", "de", "fr", "es"])
+def test_limited_sample_report_is_localized_in_every_language(language: str) -> None:
+    report = generate_markdown_report(_report_data(), language)
+    assert "20" in report and "130" in report
+    assert translate(language, "report_sample_limitation") in report
 
 
 def test_model_export_contains_reuse_metadata_but_no_raw_data() -> None:

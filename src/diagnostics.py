@@ -28,6 +28,7 @@ class DatasetDiagnostics:
     columns_with_missing: list[str]
     constant_columns: list[str]
     high_cardinality_columns: list[str]
+    possible_id_columns: list[str]
     outlier_counts: dict[str, int]
     minority_class_ratio: float
     class_imbalance: bool
@@ -38,6 +39,30 @@ class DatasetDiagnostics:
 def binary_target_candidates(dataframe: pd.DataFrame) -> list[str]:
     """Return columns containing exactly two distinct non-null values."""
     return [str(column) for column in dataframe.columns if dataframe[column].nunique(dropna=True) == 2]
+
+
+def detect_possible_id_columns(dataframe: pd.DataFrame) -> list[str]:
+    """Conservatively flag name-hinted or highly unique string identifier candidates."""
+    results: list[str] = []
+    row_count = len(dataframe)
+    if row_count == 0:
+        return results
+    for column in dataframe.columns:
+        series = dataframe[column].dropna()
+        if series.empty:
+            continue
+        normalized = str(column).lower().replace("-", "_").replace(" ", "_")
+        name_hint = (
+            normalized == "id"
+            or normalized.endswith("_id")
+            or "uuid" in normalized
+            or "identifier" in normalized
+        )
+        uniqueness = float(series.nunique() / len(series))
+        highly_unique_text = not is_numeric_dtype(series) and len(series) >= 50 and uniqueness >= 0.995
+        if (name_hint and uniqueness >= 0.50) or highly_unique_text:
+            results.append(str(column))
+    return results
 
 
 def validate_binary_target(target: pd.Series, minimum_class_size: int = 3) -> TargetValidation:
@@ -113,6 +138,7 @@ def diagnose_dataset(dataframe: pd.DataFrame, target_column: str) -> DatasetDiag
         columns_with_missing=missing,
         constant_columns=constant,
         high_cardinality_columns=high_cardinality,
+        possible_id_columns=detect_possible_id_columns(features),
         outlier_counts=_outlier_counts(features, numerical),
         minority_class_ratio=minority_ratio,
         class_imbalance=imbalanced,
