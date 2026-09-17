@@ -39,6 +39,24 @@ class BinaryStore:
                 "access_started_at": started,
             }
 
+    def mark_reported(self, training_run_id: str, final_run_id: str) -> None:
+        with self.catalog.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM holdout_locks WHERE training_run_id = ?", (training_run_id,)
+            ).fetchone()
+            if row is None:
+                raise SchemaError({"reason": "holdout_lock_missing", "training_run_id": training_run_id})
+            if row["final_run_id"] != final_run_id:
+                raise SchemaError({"reason": "holdout_final_run_mismatch", "training_run_id": training_run_id})
+            if row["status"] == "reported":
+                return
+            cursor = connection.execute(
+                "UPDATE holdout_locks SET status = 'reported' WHERE training_run_id = ? AND status = 'access_started'",
+                (training_run_id,),
+            )
+            if cursor.rowcount != 1:
+                raise SchemaError({"reason": "holdout_status_conflict", "training_run_id": training_run_id})
+
     def get_holdout_lock(self, training_run_id: str) -> dict[str, object] | None:
         with self.catalog.connection() as connection:
             row = connection.execute(
