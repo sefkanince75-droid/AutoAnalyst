@@ -12,9 +12,9 @@ def _imports(path: Path) -> tuple[str, ...]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             modules.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                modules.append(node.module)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            prefix = "." * node.level
+            modules.append(f"{prefix}{node.module}")
     return tuple(modules)
 
 
@@ -92,6 +92,8 @@ def test_v2_package_does_not_import_legacy_root_modules() -> None:
     violations: list[str] = []
     for path in _python_files(PACKAGE):
         for module in _imports(path):
+            if module.startswith("."):
+                continue
             if module.split(".", 1)[0] in legacy:
                 violations.append(f"{path.relative_to(PACKAGE)} -> {module}")
     assert not violations, "V2/legacy dependency violations:\n" + "\n".join(violations)
