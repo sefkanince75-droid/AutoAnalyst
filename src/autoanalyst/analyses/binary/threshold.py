@@ -22,11 +22,9 @@ def select_threshold(y_true, scores, *, positive_label, minimum_recall: float) -
     if not np.isfinite(values).all():
         raise ValueError("threshold scores must be finite")
     candidates = sorted(set([0.0, 1.0, *values.tolist()]))
+    truth = np.asarray([value == positive_label for value in y_true], dtype=bool)
     feasible: list[ThresholdSelection] = []
     for threshold in candidates:
-        predictions = np.where(values >= threshold, positive_label, object())
-        # object() placeholders cannot be compared reliably to the negative label, so use booleans.
-        truth = np.asarray([value == positive_label for value in y_true], dtype=bool)
         pred = values >= threshold
         recall = float(recall_score(truth, pred, zero_division=0))
         if recall + 1e-15 < minimum_recall:
