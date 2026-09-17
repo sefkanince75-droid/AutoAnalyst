@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 from ..domain.codec import FrozenDict, freeze_json, require_uuid
-from ..domain.errors import CancellationError, MethodNotApplicableError
+from ..domain.errors import CancellationError, MethodNotApplicableError, ResourceError
 from ..domain.plans import AnalysisModuleId, AnalysisSpec, ResourceBudget
 from ..domain.results import Artifact, ChartSpec, Finding, Metric, ResultOutcome, ResultTable
 
@@ -52,7 +52,7 @@ class ExecutionContext:
         if self.cancellation.is_cancelled():
             raise CancellationError({"run_id": self.run_id})
         if self.deadline_monotonic is not None and time.monotonic() >= self.deadline_monotonic:
-            raise CancellationError({"run_id": self.run_id, "reason": "deadline_exceeded"})
+            raise ResourceError({"run_id": self.run_id, "reason": "execution_deadline_exceeded"})
 
     def emit_progress(
         self, stage: str, fraction: float, payload: FrozenDict | dict[str, object] | None = None
