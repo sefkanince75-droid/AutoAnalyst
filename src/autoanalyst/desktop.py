@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
         with tempfile.TemporaryDirectory(prefix="autoanalyst-selftest-") as root:
             runtime = build_runtime(Path(root))
             assert runtime.catalog.paths.catalog.is_file()
-            assert runtime.registry.list_module_ids()
+            assert runtime.registry.module_ids
         print(f"AutoAnalyst {__version__} self-test OK")
         return 0
 
