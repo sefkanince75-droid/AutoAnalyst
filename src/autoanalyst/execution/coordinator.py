@@ -24,6 +24,7 @@ from ..domain.plans import AnalysisModuleId, AnalysisSpec
 from ..domain.results import AnalysisResult, Artifact
 from ..domain.runs import AnalysisRun, RunKind, RunStatus
 from ..environment import runtime_environment_manifest
+from ..storage.binary import BinaryStore
 from ..storage.runs import RunStore
 from .budget import enforce_budget
 from .lease import activate_worker, clear_stale_lease, owned_process, release_worker, reserve_worker
@@ -105,7 +106,8 @@ class ExecutionCoordinator:
                 }
             )
         module.check_applicability(spec).require_runnable()
-        enforce_budget(module.estimate_resources(spec), spec.resource_budget)
+        estimate = module.estimate_resources(spec)
+        enforce_budget(estimate, spec.resource_budget)
 
         running = self.store.transition(run_id, status=RunStatus.RUNNING)
         self.store.append_event(run_id, EventKind.STARTED.value, stage="run")
@@ -122,15 +124,23 @@ class ExecutionCoordinator:
             if progress is not None:
                 progress(event)
 
+        def context_progress(stage: str, fraction: float, payload) -> None:
+            emit(ProgressEvent(EventKind.PROGRESS, stage, fraction, payload))
+
         context = ExecutionContext(
             run_id=running.run_id,
             input_version_id=spec.input_version_id,
             seed=spec.seed,
             cancellation=token,
             environment=running.environment_manifest,
+            resource_budget=spec.resource_budget,
+            methodology_version=spec.module_version,
+            deadline_monotonic=time.monotonic() + spec.resource_budget.max_duration_seconds,
+            progress=context_progress,
         )
         try:
             emit(ProgressEvent(EventKind.PROGRESS, "analysis", 0.0))
+            self._start_final_holdout_access(spec, run_id)
             draft = module.run(spec, context)
             token.raise_if_cancelled()
             if draft.artifacts:
@@ -141,8 +151,6 @@ class ExecutionCoordinator:
                 spec.module_id is AnalysisModuleId.BINARY_CLASSIFICATION
                 and spec.operation == "final_evaluate"
             ):
-                from ..storage.binary import BinaryStore
-
                 training_run_id = str(spec.parameters["training_run_id"])
                 BinaryStore(self.store.catalog).mark_reported(training_run_id, run_id)
             self.store.append_event(run_id, EventKind.COMPLETED.value, stage="run")
@@ -184,6 +192,35 @@ class ExecutionCoordinator:
             raise UnexpectedExecutionError(
                 {"reason": "analysis_module_crashed", "exception_type": type(exc).__name__}
             ) from exc
+
+    def _start_final_holdout_access(self, spec: AnalysisSpec, final_run_id: str) -> None:
+        """Write the irreversible final-selection lock outside analysis modules."""
+        if (
+            spec.module_id is not AnalysisModuleId.BINARY_CLASSIFICATION
+            or spec.operation != "final_evaluate"
+        ):
+            return
+        training_run_id = str(spec.parameters["training_run_id"])
+        training_result = self.store.result_for_run(training_run_id)
+        if training_result is None:
+            return
+        provenance = training_result.provenance
+        recommendation = provenance.get("recommended_model")
+        model_meta = provenance.get("model_artifact")
+        split_meta = provenance.get("split_artifact")
+        if not recommendation or not model_meta or not split_meta:
+            return
+        selection_hash = fingerprint(
+            {
+                "training_run_id": training_run_id,
+                "model_sha": model_meta["sha256"],
+                "split_sha": split_meta["sha256"],
+                "threshold": recommendation["threshold"],
+            }
+        )
+        BinaryStore(self.store.catalog).start_holdout_access(
+            training_run_id, final_run_id, selection_hash
+        )
 
     def _register_artifacts(self, artifacts: tuple[Artifact, ...], run_id: str) -> None:
         with self.store.catalog.transaction() as connection:
