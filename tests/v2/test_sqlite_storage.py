@@ -17,12 +17,12 @@ def test_empty_workspace_applies_migration_once(tmp_path: Path) -> None:
     catalog = SQLiteCatalog(tmp_path)
 
     assert catalog.paths.catalog.is_file()
-    assert [row["version"] for row in catalog.migration_records()] == [1, 2]
+    assert [row["version"] for row in catalog.migration_records()] == [1, 2, 3]
     for reserved in (catalog.paths.projects, catalog.paths.staging, catalog.paths.logs):
         assert reserved.is_dir()
 
     reopened = SQLiteCatalog(tmp_path)
-    assert len(reopened.migration_records()) == 2
+    assert len(reopened.migration_records()) == 3
 
 
 def test_changed_migration_checksum_is_rejected(tmp_path: Path) -> None:
