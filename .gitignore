@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .coverage
+coverage.xml
 htmlcov/
 .ruff_cache/
 .mypy_cache/
@@ -17,6 +18,12 @@ autoanalyst_metrics*.csv
 /uploads/
 /data/
 /exports/
+/workspace/
+/staging/
+/build/
+/dist/
+*.egg-info/
+*.spec.tmp
 *.log
 .matplotlib-cache/
 .DS_Store
