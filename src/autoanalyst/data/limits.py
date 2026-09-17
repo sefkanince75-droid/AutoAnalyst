@@ -33,9 +33,9 @@ def enforce_source_size(byte_size: int, *, source_format: str) -> None:
 
 
 def enforce_batch_size(byte_sizes: tuple[int, ...] | list[int]) -> None:
-    total = sum(byte_sizes)
     if any(size < 0 for size in byte_sizes):
         raise ValueError("byte sizes cannot be negative")
+    total = sum(byte_sizes)
     if total > IMPORT_BATCH_MAX_BYTES:
         raise ResourceError(
             {
