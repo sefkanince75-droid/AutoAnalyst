@@ -9,7 +9,6 @@ from pathlib import Path, PurePosixPath
 import shutil
 import sqlite3
 import tempfile
-from typing import BinaryIO
 from uuid import uuid4
 import zipfile
 
@@ -151,11 +150,17 @@ class WorkspaceSnapshotService:
             raise
 
     def _backup_catalog(self, destination: Path) -> None:
-        with self.catalog.connection() as source:
-            with sqlite3.connect(destination) as target:
+        # sqlite3.Connection's context manager commits/rolls back but deliberately
+        # does not close the connection. Keep an explicit target handle so Windows
+        # releases the file before fsync/temporary-directory cleanup.
+        target = sqlite3.connect(destination)
+        try:
+            with self.catalog.connection() as source:
                 source.backup(target)
                 target.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 target.commit()
+        finally:
+            target.close()
         _fsync_file(destination)
 
 
@@ -279,5 +284,8 @@ def _hash_file(path: Path) -> tuple[str, int]:
 
 
 def _fsync_file(path: Path) -> None:
-    with path.open("rb") as handle:
+    # Windows' CRT rejects fsync on a read-only descriptor; r+b is portable for
+    # files AutoAnalyst owns and does not mutate content by itself.
+    with path.open("r+b") as handle:
+        handle.flush()
         os.fsync(handle.fileno())
