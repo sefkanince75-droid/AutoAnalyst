@@ -62,6 +62,9 @@ exclude = ["legacy_app.py", "src/i18n.py", "src/locales_v11.py"]
 select = ["E", "F", "I", "B", "UP"]
 ignore = ["E501"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["autoanalyst"]
+
 [tool.mypy]
 python_version = "3.12"
 warn_unused_configs = true
