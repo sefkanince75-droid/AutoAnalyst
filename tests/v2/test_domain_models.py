@@ -45,7 +45,7 @@ def test_invalid_binary_analysis_spec_without_exactly_one_target_is_rejected() -
             project_id=str(uuid4()),
             module_id=AnalysisModuleId.BINARY_CLASSIFICATION,
             module_version="2.0",
-            operation="train",
+            operation="train_validate",
             input_version_id=str(uuid4()),
             column_roles=(_role(ColumnUsage.FEATURE),),
             parameters=FrozenDict(),
