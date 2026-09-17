@@ -31,10 +31,31 @@ jobs:
         run: uv lock --check
       - name: Sync development environment
         run: uv sync --frozen --group dev
+      - name: Ruff lint
+        if: runner.os == 'Linux'
+        run: uv run ruff check src/autoanalyst tests/v2 tools
+      - name: Ruff format
+        if: runner.os == 'Linux'
+        run: uv run ruff format --check src/autoanalyst tests/v2 tools
+      - name: Type check core contracts
+        if: runner.os == 'Linux'
+        run: >-
+          uv run mypy
+          src/autoanalyst/domain
+          src/autoanalyst/analyses/contract.py
+          src/autoanalyst/application
+          src/autoanalyst/execution/protocol.py
+      - name: Architecture boundaries
+        if: runner.os == 'Linux'
+        run: uv run pytest -q tests/v2/test_architecture_boundaries.py
       - name: Compile
         run: uv run python -m compileall -q src app.py legacy_app.py
       - name: Run tests
+        if: runner.os == 'Windows'
         run: uv run pytest -q
+      - name: Run tests with branch coverage
+        if: runner.os == 'Linux'
+        run: uv run pytest -q --cov=autoanalyst --cov-branch --cov-report=term-missing --cov-fail-under=0
       - name: Build wheel and sdist
         run: uv run python -m build
       - name: Verify package import
