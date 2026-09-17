@@ -31,7 +31,6 @@ from ...domain.results import (
     ResultTable,
 )
 from ...storage.artifacts import ArtifactStore
-from ...storage.binary import BinaryStore
 from ...storage.runs import RunStore
 from ...storage.sqlite import SQLiteCatalog
 from ..contract import (
@@ -42,10 +41,13 @@ from ..contract import (
     ResultDraft,
     ValidationIssue,
 )
-from .evaluate import evaluate_scores, positive_scores
+from .evaluate import BinaryMetrics, evaluate_scores, positive_scores
 from .models import build_models
-from .split import make_partitions
+from .split import Partitions, make_partitions
 from .threshold import select_threshold
+
+_MAX_ENCODED_FEATURES = 10_000
+_SPLIT_WARNING_CLASS_COUNT = 30
 
 
 class BinaryClassificationModule:
@@ -57,7 +59,6 @@ class BinaryClassificationModule:
         self.artifact_store = artifact_store
         self.table_access = TableAccess(catalog, artifact_store)
         self.run_store = RunStore(catalog)
-        self.binary_store = BinaryStore(catalog)
 
     def describe(self) -> AnalysisDescription:
         return AnalysisDescription(
@@ -80,6 +81,9 @@ class BinaryClassificationModule:
                 or not 0 < float(minimum_recall) <= 1
             ):
                 issues.append(ValidationIssue("binary.invalid_minimum_recall"))
+            split_policy = str(spec.parameters.get("split_policy", "stratified"))
+            if split_policy not in {"stratified", "group", "time", "group_time"}:
+                issues.append(ValidationIssue("binary.invalid_split_policy"))
         if (
             spec.operation in {"final_evaluate", "score_new_data"}
             and "training_run_id" not in spec.parameters
@@ -97,19 +101,24 @@ class BinaryClassificationModule:
             return ApplicabilityReport(blocking_issues=(ValidationIssue("binary.dataset_missing"),))
         if spec.operation == "train_validate" and version.row_count < 40:
             return ApplicabilityReport(
-                blocking_issues=(ValidationIssue("binary.dataset_too_small"),)
+                blocking_issues=(ValidationIssue("binary.dataset_too_small"),),
+                sample_summary={"row_count": version.row_count},
             )
-        return ApplicabilityReport()
+        return ApplicabilityReport(sample_summary={"row_count": version.row_count})
 
     def estimate_resources(self, spec: AnalysisSpec) -> ResourceEstimate:
         version = self.catalog.get_version(spec.input_version_id)
         cells = max(1, version.row_count * max(1, version.column_count))
         multiplier = 96 if spec.operation == "train_validate" else 40
+        duration = max(0.2, cells / 750_000)
         return ResourceEstimate(
             max(16_000_000, min(4_000_000_000, cells * multiplier)),
             max(4_000_000, min(1_000_000_000, cells * 12)),
-            max(0.2, cells / 750_000),
+            duration,
             1,
+            output_bytes=max(1_000_000, min(1_000_000_000, cells * 8)),
+            seconds_range=(duration, duration * 3),
+            estimate_basis={"cells": cells, "operation": spec.operation},
         )
 
     def run(self, spec: AnalysisSpec, context: ExecutionContext) -> ResultDraft:
@@ -118,6 +127,7 @@ class BinaryClassificationModule:
             raise SchemaError(
                 {"reason": "invalid_binary_spec", "codes": tuple(i.code for i in issues)}
             )
+        context.raise_if_cancelled()
         if spec.operation == "train_validate":
             return self._train_validate(spec, context)
         if spec.operation == "final_evaluate":
@@ -152,8 +162,14 @@ class BinaryClassificationModule:
         )
         load_ids = [str(system_row["column_id"]), target_id, *feature_ids]
         split_policy = str(spec.parameters.get("split_policy", "stratified"))
+        if split_policy == "group_time":
+            raise MethodNotApplicableError({"reason": "combined_group_time_not_supported"})
         group_id = group_role.column_id if split_policy == "group" and group_role else None
         time_id = time_role.column_id if split_policy == "time" and time_role else None
+        if split_policy == "group" and group_id is None:
+            raise SchemaError({"reason": "group_split_requires_group_role"})
+        if split_policy == "time" and time_id is None:
+            raise SchemaError({"reason": "time_split_requires_time_role"})
         for extra in (group_id, time_id):
             if extra and extra not in load_ids:
                 load_ids.append(extra)
@@ -183,6 +199,13 @@ class BinaryClassificationModule:
             for role in feature_roles
             if role.semantic_type in {SemanticType.CATEGORICAL, SemanticType.BOOLEAN}
         ]
+        if len(numeric) + 100 * len(categorical) > _MAX_ENCODED_FEATURES:
+            raise MethodNotApplicableError(
+                {
+                    "reason": "binary.encoded_feature_limit_estimate_exceeded",
+                    "max_encoded_features": _MAX_ENCODED_FEATURES,
+                }
+            )
         X = _prepare_features(work[feature_ids], numeric, categorical)
         if (
             numeric
@@ -212,8 +235,11 @@ class BinaryClassificationModule:
         minimum_recall = float(spec.parameters.get("minimum_recall", 0.85))
         summaries: list[dict[str, object]] = []
         fitted: dict[str, object] = {}
-        for model_id, model in models.items():
-            context.raise_if_cancelled()
+        model_count = len(models)
+        for index, (model_id, model) in enumerate(models.items(), start=1):
+            context.emit_progress(
+                "binary.fit", (index - 1) / model_count, {"model_id": model_id}
+            )
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always", ConvergenceWarning)
                 model.fit(X.iloc[partitions.train], y.iloc[partitions.train])
@@ -221,6 +247,18 @@ class BinaryClassificationModule:
                     raise MethodNotApplicableError(
                         {"reason": "binary.model_convergence_failure", "model_id": model_id}
                     )
+            transformed = model.named_steps["preprocess"].transform(
+                X.iloc[partitions.train[: min(len(partitions.train), 1)]]
+            )
+            if transformed.shape[1] > _MAX_ENCODED_FEATURES:
+                raise MethodNotApplicableError(
+                    {
+                        "reason": "binary.encoded_feature_limit_exceeded",
+                        "model_id": model_id,
+                        "encoded_features": int(transformed.shape[1]),
+                        "max_encoded_features": _MAX_ENCODED_FEATURES,
+                    }
+                )
             scores = positive_scores(model, X.iloc[partitions.validation], 1)
             selected = select_threshold(
                 y.iloc[partitions.validation].to_numpy(),
@@ -232,25 +270,20 @@ class BinaryClassificationModule:
                 summaries.append({"model_id": model_id, "feasible": False})
                 fitted[model_id] = model
                 continue
-            metrics = evaluate_scores(
+            evaluated = evaluate_scores(
                 y.iloc[partitions.validation].to_numpy(),
                 scores,
                 positive_label=1,
                 negative_label=0,
                 threshold=selected.threshold,
             )
-            summaries.append(
-                {
-                    "model_id": model_id,
-                    "feasible": True,
-                    "threshold": selected.threshold,
-                    "precision": metrics.precision,
-                    "recall": metrics.recall,
-                    "average_precision": metrics.average_precision,
-                    "roc_auc": metrics.roc_auc,
-                    "f1": metrics.f1,
-                }
-            )
+            summary = {
+                "model_id": model_id,
+                "feasible": True,
+                "threshold": selected.threshold,
+                **_evaluation_values(evaluated),
+            }
+            summaries.append(summary)
             fitted[model_id] = model
 
         recommendation = _recommend(summaries)
@@ -266,51 +299,48 @@ class BinaryClassificationModule:
         )
         artifacts.append(split_artifact)
 
-        rows = tuple(
-            (
-                item.get("model_id"),
-                bool(item.get("feasible")),
-                item.get("threshold"),
-                item.get("precision"),
-                item.get("recall"),
-                item.get("average_precision"),
-                item.get("roc_auc"),
-                item.get("f1"),
-            )
-            for item in summaries
+        table_columns = (
+            "model_id",
+            "feasible",
+            "threshold",
+            "precision",
+            "recall",
+            "average_precision",
+            "roc_auc",
+            "f1",
+            "tn",
+            "fp",
+            "fn",
+            "tp",
+            "predicted_positive_rate",
         )
-        table = ResultTable(
-            str(uuid4()),
-            (
-                "model_id",
-                "feasible",
-                "threshold",
+        rows = tuple(tuple(item.get(column) for column in table_columns) for item in summaries)
+        table = ResultTable(str(uuid4()), table_columns, rows)
+        result_metrics: list[Metric] = []
+        for item in summaries:
+            if not item.get("feasible"):
+                continue
+            dimensions = {"model_id": str(item["model_id"]), "partition": "validation"}
+            for name in (
                 "precision",
                 "recall",
                 "average_precision",
                 "roc_auc",
                 "f1",
-            ),
-            rows,
-        )
-        metrics: list[Metric] = []
-        for item in summaries:
-            if not item.get("feasible"):
-                continue
-            for name in ("precision", "recall", "average_precision", "roc_auc", "f1"):
-                metrics.append(
-                    _metric(
-                        name,
-                        float(item[name]),
-                        {"model_id": str(item["model_id"]), "partition": "validation"},
-                    )
-                )
-        findings: tuple[Finding, ...] = ()
+                "tn",
+                "fp",
+                "fn",
+                "tp",
+                "predicted_positive_rate",
+            ):
+                result_metrics.append(_metric(name, float(item[name]), dimensions))
+
+        findings = list(_split_findings(y, partitions))
         outcome = ResultOutcome.SUCCEEDED
         if recommendation is None:
             outcome = ResultOutcome.PARTIAL
-            findings = (
-                Finding(str(uuid4()), "binary.no_baseline_improvement", FindingSeverity.WARNING),
+            findings.append(
+                Finding(str(uuid4()), "binary.no_baseline_improvement", FindingSeverity.WARNING)
             )
         provenance = {
             "input_version_id": spec.input_version_id,
@@ -327,10 +357,11 @@ class BinaryClassificationModule:
             "recommended_model": recommendation,
             "model_artifact": _artifact_payload(model_artifact) if model_artifact else None,
         }
+        context.emit_progress("binary.fit", 1.0, {"models": model_count})
         return ResultDraft(
             outcome=outcome,
-            metrics=tuple(metrics),
-            findings=findings,
+            metrics=tuple(result_metrics),
+            findings=tuple(findings),
             tables=(table,),
             artifacts=tuple(artifacts),
             methodology={
@@ -339,6 +370,9 @@ class BinaryClassificationModule:
                 "operation": "train_validate",
                 "models": ("dummy", "logistic_regression", "random_forest"),
                 "minimum_recall": minimum_recall,
+                "class_weight_policy": class_weight,
+                "split_policy": split_policy,
+                "encoded_feature_cap": _MAX_ENCODED_FEATURES,
             },
             sample_summary={
                 "train": len(partitions.train),
@@ -369,7 +403,9 @@ class BinaryClassificationModule:
                 "threshold": recommendation["threshold"],
             }
         )
-        self.binary_store.start_holdout_access(training_run_id, context.run_id, selection_hash)
+        # The coordinator persists ACCESS_STARTED before module.run. The module
+        # only reads the already-locked test membership and performs computation.
+        context.raise_if_cancelled()
         model = self._load_model(model_meta)
         split = self._load_split(split_meta)
         target_id = str(provenance["target_column_id"])
@@ -398,21 +434,21 @@ class BinaryClassificationModule:
         evaluated = evaluate_scores(
             y.to_numpy(), scores, positive_label=1, negative_label=0, threshold=threshold
         )
+        dimensions = {"partition": "final_test", "model_id": recommendation["model_id"]}
         metrics = tuple(
-            _metric(
-                name,
-                float(getattr(evaluated, name)),
-                {"partition": "final_test", "model_id": recommendation["model_id"]},
-            )
-            for name in ("precision", "recall", "average_precision", "roc_auc", "f1")
+            _metric(name, float(value), dimensions)
+            for name, value in _evaluation_values(evaluated).items()
         )
         return ResultDraft(
             outcome=ResultOutcome.SUCCEEDED,
             metrics=metrics,
             methodology={
                 "module": "binary_classification",
+                "module_version": self.MODULE_VERSION,
                 "operation": "final_evaluate",
                 "holdout_access": "locked_before_read",
+                "threshold_reoptimized": False,
+                "model_refit": False,
             },
             sample_summary={"test": len(test)},
             provenance={
@@ -436,6 +472,8 @@ class BinaryClassificationModule:
         mapping = dict(spec.parameters.get("feature_mapping", {}))
         training_features = tuple(str(x) for x in provenance["feature_column_ids"])
         scoring_ids = tuple(str(mapping.get(feature, feature)) for feature in training_features)
+        if len(set(scoring_ids)) != len(scoring_ids):
+            raise SchemaError({"reason": "binary.scoring_feature_mapping_not_one_to_one"})
         system_row = next(
             row
             for row in self.catalog.list_columns(spec.input_version_id)
@@ -457,6 +495,7 @@ class BinaryClassificationModule:
             if semantic.get(column) in {"categorical", "boolean"}
         ]
         X = _prepare_features(remapped, numeric, categorical)
+        context.raise_if_cancelled()
         model = self._load_model(model_meta)
         scores = positive_scores(model, X, 1)
         threshold = float(recommendation["threshold"])
@@ -476,9 +515,12 @@ class BinaryClassificationModule:
             tables=(table,),
             methodology={
                 "module": "binary_classification",
+                "module_version": self.MODULE_VERSION,
                 "operation": "score_new_data",
+                "score_semantics": "uncalibrated_model_score",
                 "threshold_locked": True,
                 "refit": False,
+                "rethreshold": False,
             },
             sample_summary={"rows_scored": len(frame)},
             provenance={
@@ -535,7 +577,7 @@ class BinaryClassificationModule:
         return self.artifact_store.finalize(staged)
 
     def _save_split(
-        self, row_ids: pd.Series, partitions, spec: AnalysisSpec, context: ExecutionContext
+        self, row_ids: pd.Series, partitions: Partitions, spec: AnalysisSpec, context: ExecutionContext
     ) -> Artifact:
         labels = np.empty(len(row_ids), dtype=object)
         labels[partitions.train] = "train"
@@ -574,6 +616,10 @@ def _roles(spec: AnalysisSpec):
     times = [role for role in spec.column_roles if ColumnUsage.TIME in role.usages]
     if len(targets) != 1:
         raise SchemaError({"reason": "binary.exactly_one_target_required"})
+    if len(groups) > 1:
+        raise SchemaError({"reason": "binary.at_most_one_group_role"})
+    if len(times) > 1:
+        raise SchemaError({"reason": "binary.at_most_one_time_role"})
     return targets[0], features, groups[0] if groups else None, times[0] if times else None
 
 
@@ -648,6 +694,42 @@ def _recommend(items: list[dict[str, object]]) -> dict[str, object] | None:
         "recall": best["recall"],
         "average_precision": best["average_precision"],
     }
+
+
+def _evaluation_values(metrics: BinaryMetrics) -> dict[str, float | int]:
+    return {
+        "precision": metrics.precision,
+        "recall": metrics.recall,
+        "average_precision": metrics.average_precision,
+        "roc_auc": metrics.roc_auc,
+        "f1": metrics.f1,
+        "tn": metrics.tn,
+        "fp": metrics.fp,
+        "fn": metrics.fn,
+        "tp": metrics.tp,
+        "predicted_positive_rate": metrics.predicted_positive_rate,
+    }
+
+
+def _split_findings(y: pd.Series, partitions: Partitions) -> tuple[Finding, ...]:
+    findings: list[Finding] = []
+    for name, indices in (("validation", partitions.validation), ("test", partitions.test)):
+        counts = y.iloc[indices].value_counts(dropna=False)
+        minimum = int(counts.min()) if not counts.empty else 0
+        if minimum < _SPLIT_WARNING_CLASS_COUNT:
+            findings.append(
+                Finding(
+                    str(uuid4()),
+                    "binary.small_partition_class_count",
+                    FindingSeverity.WARNING,
+                    parameters={
+                        "partition": name,
+                        "minimum_class_count": minimum,
+                        "warning_below": _SPLIT_WARNING_CLASS_COUNT,
+                    },
+                )
+            )
+    return tuple(findings)
 
 
 def _metric(name: str, value: float, dimensions: dict[str, object]) -> Metric:
