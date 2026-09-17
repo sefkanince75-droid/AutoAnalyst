@@ -1,85 +1,98 @@
-# AutoAnalyst v1.1.0
+# AutoAnalyst V2.0 Release Candidate
 
-AutoAnalyst is a local-first Streamlit application for deterministic tabular binary-classification workflows. Python performs all numerical and statistical work locally.
+AutoAnalyst is a **local-first, deterministic analytics workspace for tabular data**. V2 keeps raw data and computation on the local machine, stores projects and immutable dataset versions in a persistent workspace, and separates numerical results from presentation so the same result can be reopened and exported reproducibly.
 
-## Complete V1.1 workflow
+> Status: `2.0.0rc1`. V2 is in release hardening. The published V1.1 implementation is preserved in `legacy_app.py` while the V2 release candidate is the default `app.py` entry point.
 
-- Upload and validate CSV or XLSX datasets locally.
-- Upload multiple files and explicitly analyze one or combine compatible sources row-wise.
-- Select one worksheet from multi-sheet Excel workbooks without merging sheets.
-- Display compact source metadata and concrete data-quality findings, including conservative identifier warnings.
-- Validate column names and obvious dtype families before combination, normalizing column order only.
-- Optionally add a collision-safe source-file metadata column to combined rows.
-- Display total upload size and deep DataFrame memory estimates with large-data warnings.
-- Inspect dimensions, schema, sample rows, missing values, and duplicates.
-- Select and validate a binary target, including minimum class-size checks.
-- Restrict target choices to columns with exactly two distinct non-null values and automatically select a sole candidate.
-- Show class counts and percentages.
-- Diagnose feature types, class imbalance, missingness, constants, high-cardinality categoricals, robust numerical outliers, and likely scaling needs.
-- Create deterministic stratified 70% train, 15% validation, and 15% final-test partitions.
-- Flag validation or final-test partitions with fewer than 30 observations in either class, including Recall resolution for very small positive samples. These warnings are informational and do not alter metrics or selection.
-- Fit numerical imputation/scaling and categorical imputation/one-hot encoding on training data only.
-- Train imbalance-aware Logistic Regression and Random Forest baseline pipelines.
-- Compare validation ROC-AUC, PR-AUC, precision, recall, F1, confusion matrices, and diagnostic curves at threshold 0.5.
-- Optimize validation decision thresholds for a user-defined minimum Recall and recommend the feasible model with highest Precision.
-- Switch the complete interface between English, Turkish, German, French, and Spanish using a centralized translation catalog.
-- Evaluate the validation-locked model and threshold once on the untouched final test set.
-- Export a localized Markdown report, combined metrics CSV, and reusable joblib model package without raw data.
-- Guide users through a progressively disclosed, localized seven-stage workflow with safe new-analysis reset.
+## V2 workflow
 
-The V1.1 workflow is:
+`Project -> Data -> Analysis -> Results -> History`
 
-`CSV/XLSX upload -> worksheet selection -> diagnostics -> stratified split -> leakage-safe preprocessing -> baseline models -> validation comparison -> threshold optimization -> model recommendation -> untouched final test -> exportable report`
+V2 supports four closed analysis areas:
 
-Outliers are flagged for human review and are never automatically removed or modified. The final-test result cannot revise the validation-selected model or threshold.
+- **Data profile** without requiring a target: dimensions, missingness, duplicates, numerical summaries, categorical frequencies and deterministic chart data.
+- **Data preparation** through a closed recipe system with full-data preview, immutable apply, stale-preview protection, version history and lineage.
+- **Comparison / descriptive analysis** including group summaries, distributions, crosstabs, Pearson/Spearman correlation, Welch two-group comparison and Fisher 2x2 exact test.
+- **Binary classification** with an explicit positive class, leakage-safe train-only preprocessing, stratified/group/time split policies, Dummy baseline, Logistic Regression and Random Forest, validation-only threshold selection, persistent final-holdout locking and scoring on new compatible data.
 
-## Installation and use
+CSV and explicitly selected XLSX worksheets can be imported. Canonical dataset versions are stored as Parquet while raw source artifacts are retained unchanged with SHA-256 checksums. Row and column identities survive supported preparation operations.
 
-Python 3.11 or newer is recommended.
+## Reproducibility and safety boundaries
 
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-streamlit run app.py
-```
+AutoAnalyst V2 intentionally uses a closed operation set. It does **not** execute user Python, `eval`, arbitrary SQL, generated code or dynamic analysis plugins. DuckDB is used as an ephemeral local table engine over catalog-registered Parquet artifacts.
 
-Streamlit is configured in `.streamlit/config.toml` for uploads up to 1 GB per file. This is an upload ceiling, not a guarantee that a file—or a multi-file total—will fit available RAM or train successfully after parsing.
+The modeling path keeps learned preprocessing inside the scikit-learn training pipeline. Dataset-wide learned preparation such as mean/median/mode filling is recorded in lineage and can be rejected for modeling when it would create leakage risk. Final-test access is persistent: once final evaluation starts, the selected training run/model/threshold cannot silently change.
 
-XLSX support requires `openpyxl`, installed through `requirements.txt`. A missing or incompatible Excel dependency is reported separately from a corrupted or unsupported workbook. Raw internal tracebacks are retained in server logs and are not displayed in the UI.
+Analysis runs and results are persisted in SQLite. Heavy analysis runs execute through the worker path with explicit progress/cancellation state; completed results can be reopened after restarting the application.
 
-Run tests with:
+## Reports
+
+A persisted `AnalysisResult` is the source of truth for presentation. Reports do not recompute analysis values. V2 can render:
+
+- HTML (offline/self-contained)
+- Markdown
+- CSV
+- JSON
+
+Report rendering is deterministic for a result/template/options/language combination and protects spreadsheet exports from formula injection.
+
+## Requirements
+
+The V2 release baseline is **Python 3.12 x64**.
+
+Recommended setup with `uv`:
 
 ```powershell
-python -m pytest
+uv sync --frozen --group dev
+uv run streamlit run app.py
 ```
 
-## Architecture
+The persistent workspace defaults to:
 
-- `app.py`: presentation and user interaction only.
-- `src/data_loader.py`: defensive CSV/XLSX ingestion and source metadata.
-- `src/upload_processing.py`: one-time immutable capture of Streamlit uploads for metadata, hashing, and parsing.
-- `src/data_quality.py`: concrete quality findings without arbitrary scoring or automatic modification.
-- `src/dataset_combination.py`: schema validation, row-wise concatenation, source tracking, dataset identity, and memory estimates.
-- `src/diagnostics.py`: deterministic target and dataset diagnostics.
-- `src/splitting.py`: stratified 70/15/15 partitioning.
-- `src/preprocessing.py`: training-only scikit-learn preprocessing.
-- `src/models.py`: reproducible, imbalance-aware baseline pipelines.
-- `src/evaluation.py`: validation-only metrics and curve generation.
-- `src/evaluation_sample.py`: informational class-count diagnostics for validation and final-test metric stability.
-- `src/thresholding.py`: efficient validation-only threshold optimization and recommendation.
-- `src/i18n.py`: centralized five-language interface strings.
-- `src/locales_v11.py`: German, French, and Spanish message catalogs.
-- `src/final_evaluation.py`: locked, one-shot final-test metrics.
-- `src/reporting.py`: localized Markdown, CSV metric assembly, and safe model-package serialization.
-- `tests/`: focused unit tests for critical logic.
+```text
+%LOCALAPPDATA%/AutoAnalyst/workspace
+```
 
-Each fitted model owns a scikit-learn preprocessing pipeline trained only on the training partition. Baseline comparison and threshold selection use validation data. The selected model and threshold are then locked before the final test partition is evaluated once.
+It can be overridden for testing or controlled deployments with `AUTOANALYST_WORKSPACE`. User datasets and active SQLite state are not written into the repository by default.
 
-## Methodology and model selection
+## Development and verification
 
-V1 compares imbalance-aware Logistic Regression and Random Forest pipelines. Selection maximizes validation Precision while satisfying the user's minimum Recall constraint, with PR-AUC used as supporting evidence and a tie-breaker. ROC-AUC, false positives, and false negatives provide additional context. Accuracy does not drive selection when severe imbalance makes it misleading.
+Run the full suite:
 
-## V1.1 limitations
+```powershell
+uv run pytest -q
+```
 
-CSV/XLSX input, tabular data, binary classification, and binary-compatible target selection only. Excel worksheets are analyzed one at a time and are never merged automatically. Cross-validation and hyperparameter tuning are not implemented. Feature relationships are not causal evidence, and measured performance depends on data quality, representativeness, and sample size. Regression, multiclass classification, time series, NLP, images, and clustering are out of scope.
+Build the wheel:
+
+```powershell
+uv run python -m build
+```
+
+The repository CI verifies the frozen dependency graph, compilation, tests and package build. Release hardening additionally covers persistence/reopen behavior, stale-plan protection, leakage invariants, final-holdout discipline, reporting, cancellation and reproducibility.
+
+## V2 architecture
+
+The main V2 package lives under `src/autoanalyst/`:
+
+- `domain/` — immutable domain models, typed values, canonical serialization and fingerprints.
+- `application/` — project, dataset and preparation orchestration.
+- `storage/` — SQLite catalog, migrations, immutable artifacts and run/holdout persistence.
+- `data/` — CSV/XLSX ingestion, schema identity and controlled DuckDB table access.
+- `preparation/` — closed preparation operations and preview execution.
+- `analyses/` — shared analysis contract, profiling, comparisons and binary classification.
+- `execution/` — resource checks, run lifecycle, worker protocol and cancellation.
+- `reporting/` — result-only HTML/Markdown/CSV/JSON rendering.
+- `ui/` — thin Streamlit presentation layer.
+
+`legacy_app.py` and the legacy `src/*.py` modules remain only to preserve the V1.1 reference path during migration; V2 code does not depend on the legacy UI lifecycle.
+
+## V2.0 scope limits
+
+V2.0 does not claim support for regression, multiclass classification, time-series forecasting, NLP/images, clustering, arbitrary joins, arbitrary SQL, a dashboard builder, cloud/multi-user collaboration, real-time model serving or large AutoML searches. Group+time combined binary splitting is intentionally blocked rather than silently falling back to a random split.
+
+Statistical comparisons are descriptive/inferential aids, not causal evidence. Model metrics depend on data quality and representativeness; a model that does not improve on the Dummy baseline is a valid outcome and is not automatically recommended.
+
+## Legacy V1.1
+
+The previous localized seven-stage V1.1 application is preserved in `legacy_app.py` for migration/reference testing. It is not the V2 product path.
