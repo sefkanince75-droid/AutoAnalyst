@@ -5,6 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .analyses.binary.module import BinaryClassificationModule
+from .analyses.comparisons import ComparisonModule
+from .analyses.preparation import PreparationModule
+from .analyses.profiling import ProfilingModule
 from .analyses.registry import AnalysisRegistry
 from .execution.coordinator import ExecutionCoordinator
 from .execution.recovery import reconcile_interrupted_runs
@@ -23,26 +27,19 @@ class Runtime:
 
 
 def build_registry(catalog: SQLiteCatalog, artifact_store: ArtifactStore) -> AnalysisRegistry:
-    modules = []
-    try:
-        from .analyses.profiling import ProfilingModule
+    """Build the fixed V2 registry.
 
-        modules.append(ProfilingModule(catalog, artifact_store))
-    except ImportError:
-        pass
-    try:
-        from .analyses.comparisons import ComparisonModule
-
-        modules.append(ComparisonModule(catalog, artifact_store))
-    except ImportError:
-        pass
-    try:
-        from .analyses.binary.module import BinaryClassificationModule
-
-        modules.append(BinaryClassificationModule(catalog, artifact_store))
-    except ImportError:
-        pass
-    return AnalysisRegistry(modules)
+    Required V2 modules are imported eagerly. A missing dependency is therefore a
+    startup/package failure instead of silently shrinking the supported product.
+    """
+    return AnalysisRegistry(
+        (
+            ProfilingModule(catalog, artifact_store),
+            PreparationModule(catalog, artifact_store),
+            ComparisonModule(catalog, artifact_store),
+            BinaryClassificationModule(catalog, artifact_store),
+        )
+    )
 
 
 def build_runtime(workspace: str | Path | None = None) -> Runtime:
