@@ -57,11 +57,14 @@ class FileCancellationToken:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
 
-    def is_cancelled(self) -> bool:
+    def is_set(self) -> bool:
         return self.path.is_file()
 
+    def is_cancelled(self) -> bool:
+        return self.is_set()
+
     def raise_if_cancelled(self) -> None:
-        if self.is_cancelled():
+        if self.is_set():
             raise CancellationError({"reason": "execution_cancelled"})
 
 
