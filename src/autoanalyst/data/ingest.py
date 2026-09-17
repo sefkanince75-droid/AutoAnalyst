@@ -99,10 +99,7 @@ class CSVIngestor:
         canonical.insert(
             0,
             columns[0].physical_name,
-            [
-                _row_id(raw_sha256, parse_contract_json, index)
-                for index in range(len(canonical))
-            ],
+            [_row_id(raw_sha256, parse_contract_json, index) for index in range(len(canonical))],
         )
         canonical.insert(1, columns[1].physical_name, range(len(canonical)))
         canonical = canonical[[column.physical_name for column in columns]]

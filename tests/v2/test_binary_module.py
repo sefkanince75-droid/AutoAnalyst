@@ -146,7 +146,15 @@ def test_binary_train_and_persistent_final_holdout(tmp_path):
     final_result = run_store.result_for_run(final_run.run_id)
     assert final_result is not None
     final_metric_names = {metric.name for metric in final_result.metrics}
-    assert {"precision", "recall", "average_precision", "tn", "fp", "fn", "tp"} <= final_metric_names
+    assert {
+        "precision",
+        "recall",
+        "average_precision",
+        "tn",
+        "fp",
+        "fn",
+        "tp",
+    } <= final_metric_names
 
 
 def test_scoring_requires_finalized_model_and_complete_mapping(tmp_path):

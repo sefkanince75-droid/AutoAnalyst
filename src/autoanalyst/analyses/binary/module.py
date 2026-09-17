@@ -240,9 +240,7 @@ class BinaryClassificationModule:
         fitted: dict[str, object] = {}
         model_count = len(models)
         for index, (model_id, model) in enumerate(models.items(), start=1):
-            context.emit_progress(
-                "binary.fit", (index - 1) / model_count, {"model_id": model_id}
-            )
+            context.emit_progress("binary.fit", (index - 1) / model_count, {"model_id": model_id})
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always", ConvergenceWarning)
                 model.fit(X.iloc[partitions.train], y.iloc[partitions.train])
@@ -489,7 +487,10 @@ class BinaryClassificationModule:
             raise DataError({"reason": "binary.finalized_selection_mismatch"})
 
         training_features = tuple(str(x) for x in provenance["feature_column_ids"])
-        mapping = {str(key): str(value) for key, value in dict(spec.parameters.get("feature_mapping", {})).items()}
+        mapping = {
+            str(key): str(value)
+            for key, value in dict(spec.parameters.get("feature_mapping", {})).items()
+        }
         expected_keys = set(training_features)
         actual_keys = set(mapping)
         if actual_keys != expected_keys:
@@ -516,9 +517,7 @@ class BinaryClassificationModule:
         for training_feature, scoring_id in zip(training_features, scoring_ids, strict=True):
             scoring_column = scoring_metadata.get(scoring_id)
             if scoring_column is None:
-                raise SchemaError(
-                    {"reason": "binary.column_missing", "column_ids": (scoring_id,)}
-                )
+                raise SchemaError({"reason": "binary.column_missing", "column_ids": (scoring_id,)})
             actual_family = _physical_family(str(scoring_column["physical_type"]))
             expected_family = expected_families[training_feature]
             if actual_family != expected_family:
@@ -533,9 +532,7 @@ class BinaryClassificationModule:
                 )
 
         system_row = next(
-            row
-            for row in scoring_metadata.values()
-            if row["physical_name"] == INTERNAL_ROW_ID
+            row for row in scoring_metadata.values() if row["physical_name"] == INTERNAL_ROW_ID
         )
         row_id_col = str(system_row["column_id"])
         frame = self._load_as_ids(spec.input_version_id, (row_id_col, *scoring_ids))
@@ -637,7 +634,11 @@ class BinaryClassificationModule:
         return self.artifact_store.finalize(staged)
 
     def _save_split(
-        self, row_ids: pd.Series, partitions: Partitions, spec: AnalysisSpec, context: ExecutionContext
+        self,
+        row_ids: pd.Series,
+        partitions: Partitions,
+        spec: AnalysisSpec,
+        context: ExecutionContext,
     ) -> Artifact:
         labels = np.empty(len(row_ids), dtype=object)
         labels[partitions.train] = "train"

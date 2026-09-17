@@ -18,13 +18,19 @@ def holdout_selection_hash(training_run_id: str, provenance: Mapping[str, object
     recommendation = provenance.get("recommended_model")
     model_meta = provenance.get("model_artifact")
     split_meta = provenance.get("split_artifact")
-    if not isinstance(recommendation, Mapping) or not isinstance(model_meta, Mapping) or not isinstance(
-        split_meta, Mapping
+    if (
+        not isinstance(recommendation, Mapping)
+        or not isinstance(model_meta, Mapping)
+        or not isinstance(split_meta, Mapping)
     ):
-        raise SchemaError({"reason": "holdout_selection_metadata_missing", "training_run_id": training_run_id})
+        raise SchemaError(
+            {"reason": "holdout_selection_metadata_missing", "training_run_id": training_run_id}
+        )
     required_recommendation = {"model_id", "threshold"}
     if not required_recommendation.issubset(recommendation):
-        raise SchemaError({"reason": "holdout_recommendation_incomplete", "training_run_id": training_run_id})
+        raise SchemaError(
+            {"reason": "holdout_recommendation_incomplete", "training_run_id": training_run_id}
+        )
     for metadata, kind in ((model_meta, "model"), (split_meta, "split")):
         if "sha256" not in metadata:
             raise SchemaError(
@@ -89,7 +95,10 @@ class BinaryStore:
                 ).fetchone()
                 if previous is None:
                     raise SchemaError(
-                        {"reason": "holdout_previous_final_missing", "training_run_id": training_run_id}
+                        {
+                            "reason": "holdout_previous_final_missing",
+                            "training_run_id": training_run_id,
+                        }
                     )
                 previous_status = str(previous["status"])
                 if previous_status in _ACTIVE_FINAL_STATES:
