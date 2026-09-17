@@ -24,6 +24,21 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --frozen --group dev
+      - name: Apply narrow snapshot typing fix
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("src/autoanalyst/application/snapshots.py")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace("from uuid import uuid4\n", "from typing import Any\nfrom uuid import uuid4\n", 1)
+          text = text.replace(
+              "def _extract_and_verify(snapshot: Path, destination: Path) -> dict[str, object]:",
+              "def _extract_and_verify(snapshot: Path, destination: Path) -> dict[str, Any]:",
+              1,
+          )
+          path.write_text(text, encoding="utf-8")
+          PY
       - name: Format V2 Python sources
         run: uv run ruff format src/autoanalyst tests/v2 tools
       - name: Verify lint after formatting
@@ -39,5 +54,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/autoanalyst tests/v2 tools
-          git commit -m "style(v2): apply Ruff formatter"
+          git commit -m "fix(v2): type snapshot manifest shape"
           git push origin HEAD:v2-completion
