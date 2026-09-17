@@ -34,10 +34,12 @@ def reserve_worker(workspace: str | Path, run_id: str) -> WorkerLease:
     for _ in range(2):
         try:
             descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
+        except FileExistsError as exc:
             existing = read_lease(workspace)
             if existing is not None and _lease_is_active(existing):
-                raise ResourceError({"reason": "heavy_worker_busy", "run_id": existing.run_id})
+                raise ResourceError(
+                    {"reason": "heavy_worker_busy", "run_id": existing.run_id}
+                ) from exc
             if existing is not None and existing.pid is None:
                 try:
                     age = max(0.0, time.time() - path.stat().st_mtime)
@@ -46,7 +48,7 @@ def reserve_worker(workspace: str | Path, run_id: str) -> WorkerLease:
                 if age < _PENDING_STALE_SECONDS:
                     raise ResourceError(
                         {"reason": "heavy_worker_starting", "run_id": existing.run_id}
-                    )
+                    ) from exc
             try:
                 path.unlink()
             except FileNotFoundError:
