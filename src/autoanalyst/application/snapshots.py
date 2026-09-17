@@ -10,6 +10,7 @@ import sqlite3
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
+from typing import Any
 from uuid import uuid4
 
 from .. import __version__
@@ -179,7 +180,7 @@ def _snapshot_artifacts(catalog_copy: Path) -> tuple[sqlite3.Row, ...]:
         connection.close()
 
 
-def _extract_and_verify(snapshot: Path, destination: Path) -> dict[str, object]:
+def _extract_and_verify(snapshot: Path, destination: Path) -> dict[str, Any]:
     try:
         archive = zipfile.ZipFile(snapshot, "r")
     except (OSError, zipfile.BadZipFile) as exc:
