@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Callable
 
 from ..domain.codec import FrozenDict, freeze_json
@@ -44,6 +45,20 @@ class EventCancellationToken:
 
     def is_cancelled(self) -> bool:
         return bool(self._event.is_set())
+
+    def raise_if_cancelled(self) -> None:
+        if self.is_cancelled():
+            raise CancellationError({"reason": "execution_cancelled"})
+
+
+class FileCancellationToken:
+    """Cross-process cancellation token using a workspace-owned marker file."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+
+    def is_cancelled(self) -> bool:
+        return self.path.is_file()
 
     def raise_if_cancelled(self) -> None:
         if self.is_cancelled():
