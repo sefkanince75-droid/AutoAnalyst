@@ -29,6 +29,7 @@ from ..storage.runs import RunStore
 from .budget import enforce_budget
 from .lease import activate_worker, clear_stale_lease, owned_process, release_worker, reserve_worker
 from .protocol import EventCancellationToken, EventKind, ProgressCallback, ProgressEvent
+from .recovery import reconcile_interrupted_runs, reconcile_worker_run
 
 _TERMINAL = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}
 
@@ -48,11 +49,15 @@ class ExecutionCoordinator:
         environment: dict[str, object] | None = None,
     ) -> AnalysisRun:
         persisted_spec = self.store.insert_spec(spec)
+        environment_manifest = environment if environment is not None else runtime_environment_manifest()
+        input_version = self.store.catalog.get_version(persisted_spec.input_version_id)
         input_fingerprint = fingerprint(
             {
                 "input_version_id": persisted_spec.input_version_id,
+                "input_content_fingerprint": input_version.content_fingerprint,
                 "spec_hash": persisted_spec.spec_hash,
                 "module_version": persisted_spec.module_version,
+                "environment": environment_manifest,
             }
         )
         run = AnalysisRun(
@@ -65,9 +70,7 @@ class ExecutionCoordinator:
             created_at=utc_now(),
             spec_id=persisted_spec.spec_id,
             parent_run_id=parent_run_id,
-            environment_manifest=(
-                environment if environment is not None else runtime_environment_manifest()
-            ),
+            environment_manifest=environment_manifest,
         )
         return self.store.insert_run(run)
 
@@ -236,35 +239,37 @@ class ExecutionCoordinator:
                 )
 
     def start_worker_process(self, run_id: str, workspace: str | Path) -> subprocess.Popen[bytes]:
-        """Launch one owned worker process for the workspace.
-
-        The lease is atomically reserved before spawn so two browser sessions cannot start
-        concurrent heavy workers. PID reuse is guarded by the process creation timestamp.
-        """
+        """Launch one owned worker while retaining all SQLite publication in this process."""
         run = self.store.get_run(run_id)
-        if run.status is not RunStatus.PENDING:
+        if run.status is not RunStatus.PENDING or run.spec_id is None:
             raise UnexpectedExecutionError(
                 {"reason": "run_not_pending", "run_id": run_id, "status": run.status.value}
             )
         workspace_path = Path(workspace).resolve()
+        reconcile_interrupted_runs(self.store, workspace_path)
         clear_stale_lease(workspace_path)
         reserve_worker(workspace_path, run_id)
         self._cancel_path(run_id, workspace_path).unlink(missing_ok=True)
-        command = [
-            sys.executable,
-            "-m",
-            "autoanalyst.execution.worker",
-            "--workspace",
-            str(workspace_path),
-            "--run-id",
-            run_id,
-        ]
-        env = os.environ.copy()
-        src_root = str(Path(__file__).resolve().parents[2])
-        env["PYTHONPATH"] = src_root + (
-            os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
-        )
+        spec = self.store.get_spec(run.spec_id)
+        running: AnalysisRun | None = None
         try:
+            running = self.store.transition(run_id, status=RunStatus.RUNNING)
+            self.store.append_event(run_id, EventKind.STARTED.value, stage="worker")
+            self._start_final_holdout_access(spec, run_id)
+            command = [
+                sys.executable,
+                "-m",
+                "autoanalyst.execution.worker",
+                "--workspace",
+                str(workspace_path),
+                "--run-id",
+                run_id,
+            ]
+            env = os.environ.copy()
+            src_root = str(Path(__file__).resolve().parents[2])
+            env["PYTHONPATH"] = src_root + (
+                os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+            )
             process = subprocess.Popen(
                 command,
                 stdin=subprocess.DEVNULL,
@@ -276,11 +281,26 @@ class ExecutionCoordinator:
             return process
         except Exception as exc:
             release_worker(workspace_path, run_id)
+            if running is not None:
+                current = self.store.get_run(run_id)
+                if current.status is RunStatus.RUNNING:
+                    code = exc.code.value if isinstance(exc, AutoAnalystError) else "resource_error"
+                    self.store.transition(run_id, status=RunStatus.FAILED, error_code=code)
+                    self.store.append_event(
+                        run_id,
+                        EventKind.FAILED.value,
+                        stage="worker_start",
+                        payload={"error_code": code, "exception_type": type(exc).__name__},
+                    )
             if isinstance(exc, AutoAnalystError):
                 raise
             raise ResourceError(
                 {"reason": "worker_start_failed", "exception_type": type(exc).__name__}
             ) from exc
+
+    def reconcile_worker(self, run_id: str, workspace: str | Path) -> AnalysisRun:
+        reconcile_worker_run(self.store, workspace, run_id)
+        return self.store.get_run(run_id)
 
     def request_cancel(
         self,
@@ -290,11 +310,7 @@ class ExecutionCoordinator:
         cooperative_grace_seconds: float = 3.0,
         terminate_grace_seconds: float = 1.5,
     ) -> None:
-        """Cancel a pending/running job and stop only its owned worker.
-
-        Cooperative cancellation gets the first three seconds. If the worker is still alive,
-        only the process whose PID and creation time match the workspace lease is terminated.
-        """
+        """Cancel a run, escalating only against the process proven to own its lease."""
         run = self.store.get_run(run_id)
         if run.status in _TERMINAL:
             return
@@ -306,14 +322,19 @@ class ExecutionCoordinator:
 
         process = owned_process(workspace_path, run_id)
         if process is None:
+            reconcile_worker_run(self.store, workspace_path, run_id)
             self._finish_cancel_if_active(run_id)
             release_worker(workspace_path, run_id)
             return
 
         deadline = time.monotonic() + max(0.0, cooperative_grace_seconds)
         while time.monotonic() < deadline:
+            if not _process_alive(process):
+                reconcile_worker_run(self.store, workspace_path, run_id)
+                release_worker(workspace_path, run_id, pid=process.pid)
+                return
             current = self.store.get_run(run_id)
-            if current.status in _TERMINAL or not _process_alive(process):
+            if current.status in _TERMINAL:
                 release_worker(workspace_path, run_id, pid=process.pid)
                 return
             time.sleep(0.05)
@@ -330,6 +351,7 @@ class ExecutionCoordinator:
                     pass
             except psutil.NoSuchProcess:
                 pass
+        reconcile_worker_run(self.store, workspace_path, run_id)
         self._finish_cancel_if_active(run_id)
         release_worker(workspace_path, run_id, pid=process.pid)
 
