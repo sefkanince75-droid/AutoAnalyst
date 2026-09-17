@@ -72,7 +72,7 @@ class XLSXIngestor:
         created = utc_now()
         source_record = DatasetSource(str(uuid4()), project_id, source_name, SourceFormat.XLSX, raw.artifact_id, raw_sha256, len(raw_bytes), created)
         version = DatasetVersion(version_id, dataset_id, DatasetVersionKind.IMPORTED, created, import_id, table.artifact_id, len(dataframe), len(headers), schema_fingerprint(columns), _content_fingerprint(dataframe, headers, parse_contract), parse_contract=canonical_json(parse_contract))
-        self.catalog.publish_dataset_import(artifacts=(raw, table), source=source_record, version=version, columns=columns)
+        self.catalog.publish_dataset_import(artifacts=(raw, table), source=source_record, version=version, columns=columns, reason="xlsx_import")
         return IngestionResult(source_record, version, raw, table, columns)
 
     def _write_parquet(self, dataframe: pd.DataFrame, project_id: str, import_id: str) -> Artifact:
