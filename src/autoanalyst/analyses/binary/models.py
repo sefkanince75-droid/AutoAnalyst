@@ -15,8 +15,7 @@ def build_models(
 ) -> dict[str, Pipeline]:
     if class_weight_policy not in {"none", "balanced"}:
         raise ValueError("class_weight_policy must be 'none' or 'balanced'")
-    lr_weight = None if class_weight_policy == "none" else "balanced"
-    rf_weight = None if class_weight_policy == "none" else "balanced_subsample"
+    class_weight = None if class_weight_policy == "none" else "balanced"
     return {
         "dummy": Pipeline(
             [
@@ -35,7 +34,7 @@ def build_models(
                         solver="lbfgs",
                         max_iter=1000,
                         random_state=seed,
-                        class_weight=lr_weight,
+                        class_weight=class_weight,
                     ),
                 ),
             ]
@@ -52,7 +51,7 @@ def build_models(
                         max_features="sqrt",
                         random_state=seed,
                         n_jobs=1,
-                        class_weight=rf_weight,
+                        class_weight=class_weight,
                     ),
                 ),
             ]
