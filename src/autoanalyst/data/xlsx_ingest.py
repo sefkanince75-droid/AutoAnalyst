@@ -83,6 +83,8 @@ class XLSXIngestor:
                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
         )
+        parse_contract = {"format": "xlsx", "sheet_name": sheet_name, "header": True}
+        parse_contract_json = canonical_json(parse_contract)
         version_id = str(uuid4())
         columns = build_columns(
             version_id,
@@ -97,14 +99,18 @@ class XLSXIngestor:
             0,
             columns[0].physical_name,
             [
-                str(uuid5(NAMESPACE_URL, f"autoanalyst:{raw_sha256}:{sheet_name}:{index}"))
+                str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        f"autoanalyst:{raw_sha256}:{parse_contract_json}:{index}",
+                    )
+                )
                 for index in range(len(canonical))
             ],
         )
         canonical.insert(1, columns[1].physical_name, range(len(canonical)))
         canonical = canonical[[column.physical_name for column in columns]]
         table = self._write_parquet(canonical, project_id, import_id)
-        parse_contract = {"format": "xlsx", "sheet_name": sheet_name, "header": True}
         created = utc_now()
         source_record = DatasetSource(
             str(uuid4()),
@@ -127,7 +133,7 @@ class XLSXIngestor:
             len(headers),
             schema_fingerprint(columns),
             _content_fingerprint(dataframe, headers, parse_contract),
-            parse_contract=canonical_json(parse_contract),
+            parse_contract=parse_contract_json,
         )
         self.catalog.publish_dataset_import(
             artifacts=(raw, table),
