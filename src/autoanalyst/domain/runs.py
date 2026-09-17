@@ -6,8 +6,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
-from .codec import FrozenDict, SCHEMA_VERSION, freeze_json, require_sha256, require_utc, require_uuid
-from .plans import AnalysisModuleId
+from .codec import (
+    SCHEMA_VERSION,
+    FrozenDict,
+    freeze_json,
+    require_sha256,
+    require_utc,
+    require_uuid,
+)
 
 
 class RunKind(str, Enum):
@@ -44,14 +50,18 @@ class AnalysisRun:
 
     def __post_init__(self) -> None:
         for field_name in ("run_id", "project_id"):
-            object.__setattr__(self, field_name, require_uuid(getattr(self, field_name), field_name))
+            object.__setattr__(
+                self, field_name, require_uuid(getattr(self, field_name), field_name)
+            )
         for field_name in ("spec_id", "parent_run_id", "result_id"):
             value = getattr(self, field_name)
             if value is not None:
                 object.__setattr__(self, field_name, require_uuid(value, field_name))
         object.__setattr__(self, "kind", RunKind(self.kind))
         object.__setattr__(self, "status", RunStatus(self.status))
-        object.__setattr__(self, "input_fingerprint", require_sha256(self.input_fingerprint, "input_fingerprint"))
+        object.__setattr__(
+            self, "input_fingerprint", require_sha256(self.input_fingerprint, "input_fingerprint")
+        )
         object.__setattr__(self, "environment_manifest", freeze_json(self.environment_manifest))
         for field_name in ("created_at", "started_at", "completed_at"):
             value = getattr(self, field_name)
@@ -81,11 +91,15 @@ class SplitManifest:
 
     def __post_init__(self) -> None:
         for field_name in ("split_id", "input_version_id", "membership_artifact_id"):
-            object.__setattr__(self, field_name, require_uuid(getattr(self, field_name), field_name))
+            object.__setattr__(
+                self, field_name, require_uuid(getattr(self, field_name), field_name)
+            )
         object.__setattr__(self, "parameters", freeze_json(self.parameters))
         object.__setattr__(self, "counts", freeze_json(self.counts))
         object.__setattr__(self, "class_counts", freeze_json(self.class_counts))
-        object.__setattr__(self, "membership_hash", require_sha256(self.membership_hash, "membership_hash"))
+        object.__setattr__(
+            self, "membership_hash", require_sha256(self.membership_hash, "membership_hash")
+        )
         require_utc(self.created_at, "created_at")
         if not self.strategy.strip() or self.seed < 0:
             raise ValueError("SplitManifest requires strategy and non-negative seed")

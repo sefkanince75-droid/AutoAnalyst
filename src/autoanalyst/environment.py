@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
-from pathlib import Path
 import platform
 import sqlite3
 import sys
+from pathlib import Path
 
 from . import __version__
-
 
 _NUMERICAL_PACKAGES = (
     "numpy",

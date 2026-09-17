@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import os
-from pathlib import Path
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 import psutil
 
 from ..domain.errors import ResourceError
-
 
 LEASE_NAME = "worker-lease.json"
 _PENDING_STALE_SECONDS = 30.0
@@ -45,14 +44,18 @@ def reserve_worker(workspace: str | Path, run_id: str) -> WorkerLease:
                 except OSError:
                     age = 0.0
                 if age < _PENDING_STALE_SECONDS:
-                    raise ResourceError({"reason": "heavy_worker_starting", "run_id": existing.run_id})
+                    raise ResourceError(
+                        {"reason": "heavy_worker_starting", "run_id": existing.run_id}
+                    )
             try:
                 path.unlink()
             except FileNotFoundError:
                 pass
             continue
         try:
-            payload = json.dumps({"run_id": run_id, "pid": None, "create_time": None}, sort_keys=True)
+            payload = json.dumps(
+                {"run_id": run_id, "pid": None, "create_time": None}, sort_keys=True
+            )
             os.write(descriptor, payload.encode("utf-8"))
             os.fsync(descriptor)
         finally:

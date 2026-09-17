@@ -26,7 +26,9 @@ class ExecutionContext:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "run_id", require_uuid(self.run_id, "run_id"))
-        object.__setattr__(self, "input_version_id", require_uuid(self.input_version_id, "input_version_id"))
+        object.__setattr__(
+            self, "input_version_id", require_uuid(self.input_version_id, "input_version_id")
+        )
         object.__setattr__(self, "environment", freeze_json(self.environment))
         if self.seed < 0:
             raise ValueError("ExecutionContext seed cannot be negative")
@@ -72,7 +74,9 @@ class ApplicabilityReport:
 
     def require_runnable(self) -> None:
         if not self.can_run:
-            raise MethodNotApplicableError({"blocking_codes": tuple(issue.code for issue in self.blocking_issues)})
+            raise MethodNotApplicableError(
+                {"blocking_codes": tuple(issue.code for issue in self.blocking_issues)}
+            )
 
 
 @dataclass(frozen=True, slots=True)

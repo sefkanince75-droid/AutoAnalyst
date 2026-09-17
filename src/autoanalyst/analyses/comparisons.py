@@ -12,11 +12,24 @@ from scipy import stats
 from ..data.table_access import TableAccess
 from ..domain.errors import MethodNotApplicableError, SchemaError
 from ..domain.plans import AnalysisModuleId, AnalysisSpec
-from ..domain.results import Finding, FindingSeverity, Metric, MetricValueState, ResultOutcome, ResultTable
+from ..domain.results import (
+    Finding,
+    FindingSeverity,
+    Metric,
+    MetricValueState,
+    ResultOutcome,
+    ResultTable,
+)
 from ..storage.artifacts import ArtifactStore
 from ..storage.sqlite import SQLiteCatalog
-from .contract import AnalysisDescription, ApplicabilityReport, ExecutionContext, ResourceEstimate, ResultDraft, ValidationIssue
-
+from .contract import (
+    AnalysisDescription,
+    ApplicabilityReport,
+    ExecutionContext,
+    ResourceEstimate,
+    ResultDraft,
+    ValidationIssue,
+)
 
 OPERATIONS = (
     "group_summary",
@@ -67,7 +80,10 @@ class ComparisonModule:
         for key in required:
             if key not in params:
                 issues.append(ValidationIssue("comparison.missing_parameter", {"parameter": key}))
-        if spec.operation == "welch_two_groups" and params.get("independence_confirmed") is not True:
+        if (
+            spec.operation == "welch_two_groups"
+            and params.get("independence_confirmed") is not True
+        ):
             issues.append(ValidationIssue("comparison.independence_not_confirmed"))
         return tuple(issues)
 
@@ -77,7 +93,9 @@ class ComparisonModule:
         try:
             self.catalog.get_version(spec.input_version_id)
         except Exception:
-            return ApplicabilityReport(blocking_issues=(ValidationIssue("comparison.dataset_missing"),))
+            return ApplicabilityReport(
+                blocking_issues=(ValidationIssue("comparison.dataset_missing"),)
+            )
         return ApplicabilityReport()
 
     def estimate_resources(self, spec: AnalysisSpec) -> ResourceEstimate:
@@ -125,9 +143,7 @@ class ComparisonModule:
         }
         missing = [column_id for column_id in column_ids if column_id not in metadata]
         if missing:
-            raise SchemaError(
-                {"reason": "comparison_column_missing", "column_ids": tuple(missing)}
-            )
+            raise SchemaError({"reason": "comparison_column_missing", "column_ids": tuple(missing)})
         table = self.table_access.selected_columns(spec.input_version_id, column_ids).to_pandas()
         rename = {str(metadata[c]["physical_name"]): c for c in column_ids}
         return table.rename(columns=rename), metadata
@@ -200,8 +216,7 @@ class ComparisonModule:
                 str(uuid4()),
                 ("value", "count", "fraction"),
                 tuple(
-                    (_safe(k), int(v), float(v / max(1, len(series))))
-                    for k, v in counts.items()
+                    (_safe(k), int(v), float(v / max(1, len(series)))) for k, v in counts.items()
                 ),
             )
         return self._draft(spec, tables=(table,), sample={"rows_used": len(frame)})
@@ -212,9 +227,7 @@ class ComparisonModule:
         frame, _ = self._load(spec, (row_id, col_id))
         used = frame.dropna(subset=[row_id, col_id])
         ct = pd.crosstab(used[row_id], used[col_id], dropna=False)
-        rows = tuple(
-            (_safe(r), _safe(c), int(ct.loc[r, c])) for r in ct.index for c in ct.columns
-        )
+        rows = tuple((_safe(r), _safe(c), int(ct.loc[r, c])) for r in ct.index for c in ct.columns)
         table = ResultTable(str(uuid4()), ("row_value", "column_value", "count"), rows)
         return self._draft(
             spec,
@@ -318,20 +331,12 @@ class ComparisonModule:
         matrix = np.array(
             [
                 [
-                    int(
-                        ((used[row_id] == row_positive) & (used[col_id] == col_positive)).sum()
-                    ),
-                    int(
-                        ((used[row_id] == row_positive) & (used[col_id] == col_negative)).sum()
-                    ),
+                    int(((used[row_id] == row_positive) & (used[col_id] == col_positive)).sum()),
+                    int(((used[row_id] == row_positive) & (used[col_id] == col_negative)).sum()),
                 ],
                 [
-                    int(
-                        ((used[row_id] == row_negative) & (used[col_id] == col_positive)).sum()
-                    ),
-                    int(
-                        ((used[row_id] == row_negative) & (used[col_id] == col_negative)).sum()
-                    ),
+                    int(((used[row_id] == row_negative) & (used[col_id] == col_positive)).sum()),
+                    int(((used[row_id] == row_negative) & (used[col_id] == col_negative)).sum()),
                 ],
             ]
         )
@@ -358,7 +363,9 @@ class ComparisonModule:
             sample={"rows_used": len(used), "rows_excluded": len(frame) - len(used)},
         )
 
-    def _draft(self, spec: AnalysisSpec, *, metrics=(), findings=(), tables=(), sample=None) -> ResultDraft:
+    def _draft(
+        self, spec: AnalysisSpec, *, metrics=(), findings=(), tables=(), sample=None
+    ) -> ResultDraft:
         methodology: dict[str, object] = {
             "module": "comparison",
             "module_version": self.MODULE_VERSION,
@@ -412,9 +419,7 @@ def _stateful_metric(
             dimensions=dimensions or {},
             sample_size=sample_size,
         )
-    state = (
-        MetricValueState.POSITIVE_INFINITY if value > 0 else MetricValueState.NEGATIVE_INFINITY
-    )
+    state = MetricValueState.POSITIVE_INFINITY if value > 0 else MetricValueState.NEGATIVE_INFINITY
     return Metric(
         str(uuid4()),
         name,

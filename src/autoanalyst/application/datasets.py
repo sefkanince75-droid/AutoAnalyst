@@ -24,7 +24,13 @@ class DatasetService:
     def list(self, project_id: str) -> tuple[Dataset, ...]:
         self.catalog.get_project(project_id)
         with self.catalog.connection() as connection:
-            ids = [row[0] for row in connection.execute("SELECT dataset_id FROM datasets WHERE project_id = ? ORDER BY name, dataset_id", (project_id,))]
+            ids = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT dataset_id FROM datasets WHERE project_id = ? ORDER BY name, dataset_id",
+                    (project_id,),
+                )
+            ]
         return tuple(self.get(dataset_id) for dataset_id in ids)
 
     def get_version(self, version_id: str) -> DatasetVersion:
@@ -38,5 +44,7 @@ class DatasetService:
         self.get(dataset_id)
         return self.catalog.list_versions(dataset_id)
 
-    def move_head(self, dataset_id: str, version_id: str, *, reason: str = "manual_head_move") -> Dataset:
+    def move_head(
+        self, dataset_id: str, version_id: str, *, reason: str = "manual_head_move"
+    ) -> Dataset:
         return self.catalog.move_head(dataset_id, version_id, reason=reason)

@@ -14,7 +14,12 @@ class _NeverCancelled:
 
 
 def _spec(ws, module_id, operation, parameters):
-    payload = {"module": module_id.value, "operation": operation, "parameters": parameters, "version": ws.imported.version.version_id}
+    payload = {
+        "module": module_id.value,
+        "operation": operation,
+        "parameters": parameters,
+        "version": ws.imported.version.version_id,
+    }
     return AnalysisSpec(
         spec_id=str(uuid4()),
         project_id=ws.project.project_id,
@@ -33,6 +38,7 @@ def _spec(ws, module_id, operation, parameters):
 
 def _context(spec):
     from autoanalyst.analyses.contract import ExecutionContext
+
     return ExecutionContext(str(uuid4()), spec.input_version_id, 42, _NeverCancelled())
 
 

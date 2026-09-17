@@ -66,10 +66,16 @@ class PreparationService:
                         else expected_scope
                     )
                 except ValueError as exc:
-                    raise SchemaError({"reason": "invalid_learning_scope", "operation": operation}) from exc
+                    raise SchemaError(
+                        {"reason": "invalid_learning_scope", "operation": operation}
+                    ) from exc
                 if scope not in {expected_scope, LearningScope.TRAIN_ONLY}:
                     raise SchemaError(
-                        {"reason": "invalid_learning_scope", "operation": operation, "scope": scope.value}
+                        {
+                            "reason": "invalid_learning_scope",
+                            "operation": operation,
+                            "scope": scope.value,
+                        }
                     )
                 step = PreparationStep(
                     step_id=str(uuid4()),
@@ -132,9 +138,7 @@ class PreparationService:
             expected_head_revision=dataset.head_revision,
             expires_at=utc_now() + ttl,
         )
-        self.catalog.insert_preparation_preview(
-            computation.preview, computation.candidate_artifact
-        )
+        self.catalog.insert_preparation_preview(computation.preview, computation.candidate_artifact)
         return computation.preview
 
     def get_preview(self, preview_id: str) -> PreparationPreview:

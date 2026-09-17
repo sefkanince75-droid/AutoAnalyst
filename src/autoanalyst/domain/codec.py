@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
-from dataclasses import fields, is_dataclass
-from datetime import datetime, timezone
-from enum import Enum
 import hashlib
 import json
 import math
+from collections.abc import Iterator, Mapping
+from dataclasses import fields, is_dataclass
+from datetime import UTC, datetime
+from enum import Enum
 from typing import Any
-
 
 SCHEMA_VERSION = "2.0"
 
@@ -22,7 +21,9 @@ class FrozenDict(Mapping[str, Any]):
 
     def __init__(self, value: Mapping[str, Any] | tuple[tuple[str, Any], ...] = ()) -> None:
         items = value.items() if isinstance(value, Mapping) else value
-        normalized = tuple(sorted(((str(key), freeze_json(item)) for key, item in items), key=lambda pair: pair[0]))
+        normalized = tuple(
+            sorted(((str(key), freeze_json(item)) for key, item in items), key=lambda pair: pair[0])
+        )
         if len({key for key, _ in normalized}) != len(normalized):
             raise ValueError("FrozenDict keys must be unique")
         object.__setattr__(self, "_items", normalized)
@@ -45,11 +46,11 @@ class FrozenDict(Mapping[str, Any]):
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def require_utc(value: datetime, field_name: str) -> datetime:
-    if value.tzinfo is None or value.utcoffset() != timezone.utc.utcoffset(value):
+    if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
         raise ValueError(f"{field_name} must be timezone-aware UTC")
     return value
 

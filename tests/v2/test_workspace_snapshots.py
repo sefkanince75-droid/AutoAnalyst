@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +11,9 @@ from autoanalyst.domain.errors import SchemaError
 from autoanalyst.storage import ArtifactStore, SQLiteCatalog
 
 
-def test_workspace_snapshot_round_trip_preserves_catalog_and_artifacts(phase3_workspace, tmp_path: Path) -> None:
+def test_workspace_snapshot_round_trip_preserves_catalog_and_artifacts(
+    phase3_workspace, tmp_path: Path
+) -> None:
     source = phase3_workspace
     snapshot_path = tmp_path / "workspace.aasnapshot"
     service = WorkspaceSnapshotService(source.catalog, source.store)

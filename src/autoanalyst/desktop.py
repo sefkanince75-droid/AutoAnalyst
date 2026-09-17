@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import sys
 import tempfile
+from pathlib import Path
 
 from autoanalyst import __version__
 from autoanalyst.bootstrap import build_runtime

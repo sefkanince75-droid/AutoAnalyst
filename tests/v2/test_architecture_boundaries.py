@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-
 PACKAGE = Path(__file__).parents[2] / "src" / "autoanalyst"
 
 
@@ -59,7 +58,11 @@ def test_backend_layers_do_not_depend_on_streamlit_or_ui() -> None:
     for root in roots:
         for path in _python_files(root):
             for module in _imports(path):
-                if module == "streamlit" or module.startswith("streamlit.") or module.startswith("autoanalyst.ui"):
+                if (
+                    module == "streamlit"
+                    or module.startswith("streamlit.")
+                    or module.startswith("autoanalyst.ui")
+                ):
                     violations.append(f"{path.relative_to(PACKAGE)} -> {module}")
     assert not violations, "Backend/UI dependency violations:\n" + "\n".join(violations)
 

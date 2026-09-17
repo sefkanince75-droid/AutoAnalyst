@@ -40,7 +40,9 @@ def test_head_revision_history_and_events_advance_monotonically(tmp_path: Path) 
     events = catalog.list_head_events(dataset.dataset_id)
     assert [(event["from_revision"], event["to_revision"]) for event in events] == [(0, 1), (1, 2)]
 
-    moved = datasets.move_head(dataset.dataset_id, first.version.version_id, reason="restore_version")
+    moved = datasets.move_head(
+        dataset.dataset_id, first.version.version_id, reason="restore_version"
+    )
     assert moved.head_version_id == first.version.version_id
     assert moved.head_revision == 3
     assert catalog.list_head_events(dataset.dataset_id)[-1]["reason"] == "restore_version"

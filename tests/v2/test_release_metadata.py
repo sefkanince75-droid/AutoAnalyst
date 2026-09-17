@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
 import tomllib
+from pathlib import Path
 
 from autoanalyst import __version__
-
 
 ROOT = Path(__file__).parents[2]
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
 import pytest
 
 import autoanalyst.storage.sqlite as sqlite_storage
@@ -43,8 +41,13 @@ def test_apply_uses_candidate_without_recomputing_and_publishes_new_version(
     assert version.table_artifact_id == preview.candidate_artifact_id
     assert dataset.head_version_id == version.version_id
     assert dataset.head_revision == 2
-    assert phase3_workspace.catalog.list_head_events(dataset.dataset_id)[-1]["reason"] == "preparation_apply"
-    assert phase3_workspace.preparation.get_preview(preview.preview_id).status is PreviewStatus.APPLIED
+    assert (
+        phase3_workspace.catalog.list_head_events(dataset.dataset_id)[-1]["reason"]
+        == "preparation_apply"
+    )
+    assert (
+        phase3_workspace.preparation.get_preview(preview.preview_id).status is PreviewStatus.APPLIED
+    )
 
 
 def test_apply_is_idempotent(phase3_workspace) -> None:
@@ -129,8 +132,13 @@ def test_failed_apply_transaction_rolls_back_version_head_and_status(
     with pytest.raises(RuntimeError, match="forced head failure"):
         phase3_workspace.preparation.apply_preview(preview.preview_id)
 
-    assert phase3_workspace.datasets.version_history(phase3_workspace.dataset.dataset_id) == before_versions
+    assert (
+        phase3_workspace.datasets.version_history(phase3_workspace.dataset.dataset_id)
+        == before_versions
+    )
     assert phase3_workspace.datasets.get(phase3_workspace.dataset.dataset_id).head_revision == 1
-    assert phase3_workspace.preparation.get_preview(preview.preview_id).status is PreviewStatus.READY
+    assert (
+        phase3_workspace.preparation.get_preview(preview.preview_id).status is PreviewStatus.READY
+    )
     with phase3_workspace.catalog.connection() as connection:
         assert connection.execute("SELECT count(*) FROM dataset_version_lineage").fetchone()[0] == 0

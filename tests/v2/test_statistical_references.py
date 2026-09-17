@@ -37,7 +37,11 @@ def _workspace(tmp_path, csv_bytes: bytes):
 
 
 def _spec(project, imported, operation: str, parameters: dict[str, object]) -> AnalysisSpec:
-    payload = {"operation": operation, "parameters": parameters, "version": imported.version.version_id}
+    payload = {
+        "operation": operation,
+        "parameters": parameters,
+        "version": imported.version.version_id,
+    }
     return AnalysisSpec(
         spec_id=str(uuid4()),
         project_id=project.project_id,
@@ -82,8 +86,12 @@ def test_reference_pearson_and_spearman_match_known_values(tmp_path) -> None:
         {"x_column_id": columns["x"], "y_column_id": columns["reverse"], "method": "spearman"},
     )
 
-    assert math.isclose(_metrics(module.run(pearson, _context(pearson)))["correlation"].value, 1.0, abs_tol=1e-12)
-    assert math.isclose(_metrics(module.run(spearman, _context(spearman)))["correlation"].value, -1.0, abs_tol=1e-12)
+    assert math.isclose(
+        _metrics(module.run(pearson, _context(pearson)))["correlation"].value, 1.0, abs_tol=1e-12
+    )
+    assert math.isclose(
+        _metrics(module.run(spearman, _context(spearman)))["correlation"].value, -1.0, abs_tol=1e-12
+    )
 
 
 def test_reference_welch_matches_hand_checked_fixture(tmp_path) -> None:

@@ -35,7 +35,11 @@ def test_preparation_module_preview_publishes_result_without_moving_head(phase3_
         steps=(
             {
                 "operation": "fill_missing",
-                "parameters": {"column_ids": [num_id], "strategy": "constant", "value": {"type": "integer", "value": 0}},
+                "parameters": {
+                    "column_ids": [num_id],
+                    "strategy": "constant",
+                    "value": {"type": "integer", "value": 0},
+                },
             },
         ),
     )

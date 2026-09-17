@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from ..domain.errors import ResourceError
 
-
 MIB = 1024 * 1024
 CSV_MAX_BYTES = 256 * MIB
 XLSX_MAX_BYTES = 64 * MIB

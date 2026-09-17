@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from io import BytesIO
 import os
+from io import BytesIO
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid4, uuid5
 

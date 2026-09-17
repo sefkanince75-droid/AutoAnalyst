@@ -82,5 +82,7 @@ def test_run_state_machine_and_events(phase3_workspace):
     assert running.status is RunStatus.RUNNING
     assert running.started_at is not None
     assert store.append_event(run.run_id, "progress", stage="load", payload={"fraction": 0.5}) == 0
-    assert store.append_event(run.run_id, "progress", stage="compute", payload={"fraction": 1.0}) == 1
+    assert (
+        store.append_event(run.run_id, "progress", stage="compute", payload={"fraction": 1.0}) == 1
+    )
     assert [item["sequence"] for item in store.list_events(run.run_id)] == [0, 1]

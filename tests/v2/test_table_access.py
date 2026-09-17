@@ -31,7 +31,9 @@ def test_display_name_sql_injection_is_never_used_as_identifier(tmp_path) -> Non
         source=b'evil"; DROP TABLE projects; --\nvalue\n',
         original_name="injection.csv",
     )
-    column = next(row for row in catalog.list_columns(imported.version.version_id) if not row["is_system"])
+    column = next(
+        row for row in catalog.list_columns(imported.version.version_id) if not row["is_system"]
+    )
 
     result = TableAccess(catalog, store).selected_columns(
         imported.version.version_id, (column["column_id"],)

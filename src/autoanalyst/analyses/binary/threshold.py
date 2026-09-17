@@ -15,7 +15,9 @@ class ThresholdSelection:
     recall: float
 
 
-def select_threshold(y_true, scores, *, positive_label, minimum_recall: float) -> ThresholdSelection | None:
+def select_threshold(
+    y_true, scores, *, positive_label, minimum_recall: float
+) -> ThresholdSelection | None:
     if not 0 < minimum_recall <= 1:
         raise ValueError("minimum_recall must be in (0, 1]")
     values = np.asarray(scores, dtype=float)

@@ -142,7 +142,9 @@ def operation_definition(operation: str) -> OperationDefinition:
     try:
         return OPERATION_REGISTRY[OperationId(operation).value]
     except (ValueError, KeyError) as exc:
-        raise SchemaError({"reason": "unsupported_preparation_operation", "operation": operation}) from exc
+        raise SchemaError(
+            {"reason": "unsupported_preparation_operation", "operation": operation}
+        ) from exc
 
 
 def validate_parameters(operation: str, parameters: FrozenDict | dict[str, Any]) -> FrozenDict:
@@ -169,7 +171,10 @@ def validate_parameters(operation: str, parameters: FrozenDict | dict[str, Any])
             raise SchemaError({"reason": "null_filter_does_not_accept_value"})
         if operator not in {"is_null", "is_not_null"} and not has_value:
             raise SchemaError({"reason": "filter_value_required"})
-        if operator in {"gt", "gte", "lt", "lte", "contains_literal"} and frozen.get("value") is None:
+        if (
+            operator in {"gt", "gte", "lt", "lte", "contains_literal"}
+            and frozen.get("value") is None
+        ):
             raise SchemaError({"reason": "null_only_supports_eq_ne_or_null_operators"})
     elif operation_id is OperationId.RENAME_COLUMN:
         _uuid(frozen["column_id"])

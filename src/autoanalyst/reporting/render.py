@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import csv
-from html import escape
 import io
 import json
-from uuid import uuid4
 import zipfile
+from html import escape
+from uuid import uuid4
 
 from .. import __version__
 from ..domain.codec import canonical_json, fingerprint, to_primitive, utc_now
@@ -16,7 +16,6 @@ from ..domain.results import AnalysisResult, Report
 from ..storage.artifacts import ArtifactStore
 from ..storage.runs import RunStore
 from ..storage.sqlite import SQLiteCatalog
-
 
 TEMPLATE_VERSION = __version__
 SUPPORTED_FORMATS = {"html", "markdown", "json", "csv"}

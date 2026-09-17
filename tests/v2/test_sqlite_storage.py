@@ -9,7 +9,6 @@ import pytest
 from autoanalyst.domain.errors import SchemaError
 from autoanalyst.storage.sqlite import SQLiteCatalog, WorkspacePaths
 
-
 MIGRATIONS = Path(__file__).parents[2] / "src" / "autoanalyst" / "storage" / "migrations"
 
 

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import math
-from uuid import UUID
+from datetime import UTC, datetime
 
 import pytest
 
@@ -15,7 +14,6 @@ from autoanalyst.domain.codec import (
 )
 from autoanalyst.domain.datasets import Project
 
-
 PROJECT_ID = "2da3d7fe-48ce-4b6b-8657-dd7cb6f56fb6"
 
 
@@ -23,8 +21,8 @@ def test_domain_object_round_trip_serialization() -> None:
     project = Project(
         project_id=PROJECT_ID,
         name="Example",
-        created_at=datetime(2026, 1, 2, 3, 4, tzinfo=timezone.utc),
-        updated_at=datetime(2026, 1, 2, 3, 5, tzinfo=timezone.utc),
+        created_at=datetime(2026, 1, 2, 3, 4, tzinfo=UTC),
+        updated_at=datetime(2026, 1, 2, 3, 5, tzinfo=UTC),
         default_language="tr",
         revision=2,
     )

@@ -33,7 +33,9 @@ def make_partitions(
         y = frame[target].to_numpy()
         train, temp = train_test_split(indices, test_size=0.30, random_state=seed, stratify=y)
         temp_y = y[temp]
-        validation, test = train_test_split(temp, test_size=0.50, random_state=seed, stratify=temp_y)
+        validation, test = train_test_split(
+            temp, test_size=0.50, random_state=seed, stratify=temp_y
+        )
     elif strategy == "group":
         if not group:
             raise SchemaError({"reason": "group_split_requires_group_column"})
@@ -80,7 +82,9 @@ def _advance_equal_timestamp(series: pd.Series, index: int) -> int:
     return index
 
 
-def _validate_partitions(target: pd.Series, train: np.ndarray, validation: np.ndarray, test: np.ndarray) -> None:
+def _validate_partitions(
+    target: pd.Series, train: np.ndarray, validation: np.ndarray, test: np.ndarray
+) -> None:
     if not len(train) or not len(validation) or not len(test):
         raise MethodNotApplicableError({"reason": "split_empty_partition"})
     combined = np.concatenate([train, validation, test])
@@ -90,4 +94,6 @@ def _validate_partitions(target: pd.Series, train: np.ndarray, validation: np.nd
     for indices, minimum, name in minimums:
         counts = target.iloc[indices].value_counts(dropna=False)
         if len(counts) != 2 or int(counts.min()) < minimum:
-            raise MethodNotApplicableError({"reason": "split_class_too_small", "partition": name, "minimum": minimum})
+            raise MethodNotApplicableError(
+                {"reason": "split_class_too_small", "partition": name, "minimum": minimum}
+            )

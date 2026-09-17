@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
-from datetime import date, datetime
 import hashlib
-from io import BytesIO, StringIO
 import math
 import os
+from dataclasses import dataclass
+from datetime import date, datetime
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -82,7 +82,9 @@ class CSVIngestor:
             raise DataError({"reason": "csv_has_no_rows"})
 
         version_id = str(uuid4())
-        columns = build_columns(version_id, list(headers), [str(dtype) for dtype in dataframe.dtypes])
+        columns = build_columns(
+            version_id, list(headers), [str(dtype) for dtype in dataframe.dtypes]
+        )
         user_columns = tuple(column for column in columns if not column.is_system)
         canonical = dataframe.rename(
             columns={column.display_name: column.physical_name for column in user_columns}
@@ -193,7 +195,12 @@ def _read_headers(raw_bytes: bytes, *, delimiter: str, encoding: str) -> tuple[s
 def _read_dataframe(raw_bytes: bytes, *, delimiter: str, encoding: str) -> pd.DataFrame:
     try:
         return pd.read_csv(BytesIO(raw_bytes), sep=delimiter, encoding=encoding)
-    except (pd.errors.ParserError, pd.errors.EmptyDataError, UnicodeDecodeError, LookupError) as exc:
+    except (
+        pd.errors.ParserError,
+        pd.errors.EmptyDataError,
+        UnicodeDecodeError,
+        LookupError,
+    ) as exc:
         raise DataError(
             {"reason": "csv_parse_failed", "exception_type": type(exc).__name__}
         ) from exc

@@ -43,7 +43,10 @@ def test_dataset_learned_value_survives_preview_persistence_and_apply(phase3_wor
     assert resolved["value"] == 3.0
     version = phase3_workspace.preparation.apply_preview(preview.preview_id)
     assert version.recipe_id == recipe.recipe_id
-    assert phase3_workspace.preparation.get_preview(preview.preview_id).step_results == reloaded.step_results
+    assert (
+        phase3_workspace.preparation.get_preview(preview.preview_id).step_results
+        == reloaded.step_results
+    )
 
 
 def test_append_input_order_is_recorded_in_lineage(phase3_workspace) -> None:

@@ -205,7 +205,9 @@ class RunStore:
             for row in rows
         )
 
-    def publish_result(self, run_id: str, result: AnalysisResult, *, now: datetime | None = None) -> AnalysisRun:
+    def publish_result(
+        self, run_id: str, result: AnalysisResult, *, now: datetime | None = None
+    ) -> AnalysisRun:
         current = self.get_run(run_id)
         if current.status is not RunStatus.RUNNING:
             raise SchemaError({"reason": "run_not_running", "run_id": run_id})

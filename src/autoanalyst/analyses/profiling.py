@@ -61,7 +61,9 @@ class ProfilingModule:
         try:
             version = self.catalog.get_version(spec.input_version_id)
         except Exception:
-            return ApplicabilityReport(blocking_issues=(ValidationIssue("profiling.dataset_missing"),))
+            return ApplicabilityReport(
+                blocking_issues=(ValidationIssue("profiling.dataset_missing"),)
+            )
         if version.column_count <= 0:
             return ApplicabilityReport(blocking_issues=(ValidationIssue("profiling.no_columns"),))
         warnings = () if version.row_count else (ValidationIssue("profiling.empty_dataset"),)
@@ -80,14 +82,20 @@ class ProfilingModule:
     def run(self, spec: AnalysisSpec, context: ExecutionContext) -> ResultDraft:
         issues = self.validate(spec)
         if issues:
-            raise SchemaError({"reason": "invalid_profiling_spec", "codes": tuple(i.code for i in issues)})
+            raise SchemaError(
+                {"reason": "invalid_profiling_spec", "codes": tuple(i.code for i in issues)}
+            )
         context.raise_if_cancelled()
-        columns = tuple(row for row in self.catalog.list_columns(spec.input_version_id) if not row["is_system"])
+        columns = tuple(
+            row for row in self.catalog.list_columns(spec.input_version_id) if not row["is_system"]
+        )
         column_ids = tuple(str(row["column_id"]) for row in columns)
         arrow = self.table_access.selected_columns(spec.input_version_id, column_ids)
         frame = arrow.to_pandas()
         physical_to_meta = {str(row["physical_name"]): row for row in columns}
-        frame = frame.rename(columns={name: str(meta["display_name"]) for name, meta in physical_to_meta.items()})
+        frame = frame.rename(
+            columns={name: str(meta["display_name"]) for name, meta in physical_to_meta.items()}
+        )
         display_to_meta = {str(row["display_name"]): row for row in columns}
 
         metrics = [
@@ -132,11 +140,17 @@ class ProfilingModule:
                 )
             )
             if is_all_missing:
-                findings.append(_finding("profiling.all_missing", FindingSeverity.WARNING, meta["column_id"]))
+                findings.append(
+                    _finding("profiling.all_missing", FindingSeverity.WARNING, meta["column_id"])
+                )
             elif is_constant:
-                findings.append(_finding("profiling.constant", FindingSeverity.INFO, meta["column_id"]))
+                findings.append(
+                    _finding("profiling.constant", FindingSeverity.INFO, meta["column_id"])
+                )
             if len(series) and distinct / max(1, len(non_null)) >= 0.95 and distinct >= 10:
-                findings.append(_finding("profiling.high_cardinality", FindingSeverity.INFO, meta["column_id"]))
+                findings.append(
+                    _finding("profiling.high_cardinality", FindingSeverity.INFO, meta["column_id"])
+                )
             if non_finite:
                 findings.append(
                     _finding(
@@ -152,7 +166,10 @@ class ProfilingModule:
                 table = ResultTable(
                     table_id=str(uuid4()),
                     columns=("bin_left", "bin_right", "count"),
-                    rows=tuple((float(edges[i]), float(edges[i + 1]), int(counts[i])) for i in range(len(counts))),
+                    rows=tuple(
+                        (float(edges[i]), float(edges[i + 1]), int(counts[i]))
+                        for i in range(len(counts))
+                    ),
                 )
                 tables.append(table)
                 charts.append(
@@ -160,7 +177,12 @@ class ProfilingModule:
                         chart_id=str(uuid4()),
                         chart_type="histogram",
                         data_table_id=table.table_id,
-                        encoding={"x": "bin_left", "x2": "bin_right", "y": "count", "column_id": meta["column_id"]},
+                        encoding={
+                            "x": "bin_left",
+                            "x2": "bin_right",
+                            "y": "count",
+                            "column_id": meta["column_id"],
+                        },
                     )
                 )
 
@@ -187,7 +209,11 @@ class ProfilingModule:
             findings=tuple(findings),
             tables=tuple(tables),
             charts=tuple(charts),
-            methodology={"module": "profiling", "module_version": self.MODULE_VERSION, "full_dataset": True},
+            methodology={
+                "module": "profiling",
+                "module_version": self.MODULE_VERSION,
+                "full_dataset": True,
+            },
             sample_summary={"rows_used": len(frame), "rows_excluded": 0},
             provenance={"input_version_id": spec.input_version_id, "spec_hash": spec.spec_hash},
         )

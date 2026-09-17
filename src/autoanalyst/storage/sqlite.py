@@ -2,22 +2,27 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import sqlite3
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 from ..domain.codec import canonical_json, utc_now
-from ..domain.datasets import Dataset, DatasetSource, DatasetVersion, DatasetVersionKind, SourceFormat
+from ..domain.datasets import (
+    Dataset,
+    DatasetSource,
+    DatasetVersion,
+    DatasetVersionKind,
+    SourceFormat,
+)
 from ..domain.errors import DataError, SchemaError
 from ..domain.results import Artifact
-
 
 WORKSPACE_ENV = "AUTOANALYST_WORKSPACE"
 
@@ -31,7 +36,7 @@ class WorkspacePaths:
     logs: Path
 
     @classmethod
-    def create(cls, override: str | Path | None = None) -> "WorkspacePaths":
+    def create(cls, override: str | Path | None = None) -> WorkspacePaths:
         if override is not None:
             root = Path(override).expanduser()
         elif os.environ.get(WORKSPACE_ENV):
@@ -62,7 +67,9 @@ class SQLiteCatalog:
         *,
         migrations_dir: Path | None = None,
     ) -> None:
-        self.paths = workspace if isinstance(workspace, WorkspacePaths) else WorkspacePaths.create(workspace)
+        self.paths = (
+            workspace if isinstance(workspace, WorkspacePaths) else WorkspacePaths.create(workspace)
+        )
         self.migrations_dir = migrations_dir or Path(__file__).with_name("migrations")
         self._apply_migrations()
 
@@ -97,7 +104,11 @@ class SQLiteCatalog:
 
     def migration_records(self) -> tuple[sqlite3.Row, ...]:
         with self.connection() as connection:
-            return tuple(connection.execute("SELECT version, checksum, applied_at FROM schema_migrations ORDER BY version"))
+            return tuple(
+                connection.execute(
+                    "SELECT version, checksum, applied_at FROM schema_migrations ORDER BY version"
+                )
+            )
 
     def insert_project(self, project) -> None:
         with self.transaction() as connection:
@@ -120,7 +131,9 @@ class SQLiteCatalog:
         from ..domain.datasets import Project
 
         with self.connection() as connection:
-            row = connection.execute("SELECT * FROM projects WHERE project_id = ?", (project_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ?", (project_id,)
+            ).fetchone()
         if row is None:
             raise DataError({"reason": "project_not_found", "project_id": project_id})
         return Project(
@@ -137,7 +150,12 @@ class SQLiteCatalog:
 
     def list_projects(self):
         with self.connection() as connection:
-            ids = [row[0] for row in connection.execute("SELECT project_id FROM projects ORDER BY created_at, project_id")]
+            ids = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT project_id FROM projects ORDER BY created_at, project_id"
+                )
+            ]
         return tuple(self.get_project(project_id) for project_id in ids)
 
     def rename_project(self, project_id: str, name: str, updated_at: datetime) -> object:
@@ -169,14 +187,18 @@ class SQLiteCatalog:
 
     def get_dataset(self, dataset_id: str) -> Dataset:
         with self.connection() as connection:
-            row = connection.execute("SELECT * FROM datasets WHERE dataset_id = ?", (dataset_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM datasets WHERE dataset_id = ?", (dataset_id,)
+            ).fetchone()
         if row is None:
             raise DataError({"reason": "dataset_not_found", "dataset_id": dataset_id})
         return _dataset(row)
 
     def get_version(self, version_id: str) -> DatasetVersion:
         with self.connection() as connection:
-            row = connection.execute("SELECT * FROM dataset_versions WHERE version_id = ?", (version_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM dataset_versions WHERE version_id = ?", (version_id,)
+            ).fetchone()
         if row is None:
             raise DataError({"reason": "dataset_version_not_found", "version_id": version_id})
         return _version(row)
@@ -194,14 +216,18 @@ class SQLiteCatalog:
 
     def get_artifact(self, artifact_id: str) -> Artifact:
         with self.connection() as connection:
-            row = connection.execute("SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,)
+            ).fetchone()
         if row is None:
             raise DataError({"reason": "artifact_not_found", "artifact_id": artifact_id})
         return _artifact(row)
 
     def get_source(self, source_id: str) -> DatasetSource:
         with self.connection() as connection:
-            row = connection.execute("SELECT * FROM dataset_sources WHERE source_id = ?", (source_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM dataset_sources WHERE source_id = ?", (source_id,)
+            ).fetchone()
         if row is None:
             raise DataError({"reason": "dataset_source_not_found", "source_id": source_id})
         return _source(row)
@@ -270,7 +296,9 @@ class SQLiteCatalog:
 
     def move_head(self, dataset_id: str, version_id: str, *, reason: str) -> Dataset:
         with self.transaction() as connection:
-            dataset_row = connection.execute("SELECT * FROM datasets WHERE dataset_id = ?", (dataset_id,)).fetchone()
+            dataset_row = connection.execute(
+                "SELECT * FROM datasets WHERE dataset_id = ?", (dataset_id,)
+            ).fetchone()
             version_row = connection.execute(
                 "SELECT dataset_id FROM dataset_versions WHERE version_id = ?", (version_id,)
             ).fetchone()
@@ -365,10 +393,14 @@ class SQLiteCatalog:
                     preview.after_row_count,
                     preview.before_column_count,
                     preview.after_column_count,
-                    canonical_json(tuple(_step_result_payload(item) for item in preview.step_results)),
+                    canonical_json(
+                        tuple(_step_result_payload(item) for item in preview.step_results)
+                    ),
                     canonical_json(preview.warnings),
                     canonical_json(preview.sample_changes),
-                    canonical_json(tuple(_column_payload(item) for item in preview.candidate_columns)),
+                    canonical_json(
+                        tuple(_column_payload(item) for item in preview.candidate_columns)
+                    ),
                     canonical_json(preview.append_input_version_ids),
                     preview.content_fingerprint,
                     preview.schema_hash,
@@ -451,7 +483,9 @@ class SQLiteCatalog:
                 "SELECT * FROM preparation_previews WHERE preview_id = ?", (preview_id,)
             ).fetchone()
             if preview is None:
-                raise DataError({"reason": "preparation_preview_not_found", "preview_id": preview_id})
+                raise DataError(
+                    {"reason": "preparation_preview_not_found", "preview_id": preview_id}
+                )
             if preview["status"] == "applied":
                 applied = connection.execute(
                     "SELECT * FROM dataset_versions WHERE version_id = ?",
@@ -461,7 +495,9 @@ class SQLiteCatalog:
                     raise SchemaError({"reason": "applied_preview_version_missing"})
                 return _version(applied)
             if _datetime(preview["expires_at"]) <= now:
-                raise SchemaError({"reason": "preparation_preview_expired", "preview_id": preview_id})
+                raise SchemaError(
+                    {"reason": "preparation_preview_expired", "preview_id": preview_id}
+                )
             recipe = connection.execute(
                 "SELECT * FROM preparation_recipes WHERE recipe_id = ?", (preview["recipe_id"],)
             ).fetchone()
@@ -490,7 +526,10 @@ class SQLiteCatalog:
             artifact = _artifact(artifact_row) if artifact_row else None
             if artifact is None or not verify_artifact(artifact):
                 raise DataError(
-                    {"reason": "artifact_verification_failed", "artifact_id": preview["candidate_artifact_id"]}
+                    {
+                        "reason": "artifact_verification_failed",
+                        "artifact_id": preview["candidate_artifact_id"],
+                    }
                 )
             if version.table_artifact_id != preview["candidate_artifact_id"]:
                 raise SchemaError({"reason": "candidate_artifact_mismatch"})
@@ -503,7 +542,9 @@ class SQLiteCatalog:
                 "schema_hash": preview["schema_hash"],
                 "content_fingerprint": preview["content_fingerprint"],
             }
-            if any(getattr(version, key) != value for key, value in expected_version_fields.items()):
+            if any(
+                getattr(version, key) != value for key, value in expected_version_fields.items()
+            ):
                 raise SchemaError({"reason": "prepared_version_metadata_mismatch"})
             if version.kind is not DatasetVersionKind.PREPARED:
                 raise SchemaError({"reason": "prepared_version_kind_required"})
@@ -580,7 +621,10 @@ class SQLiteCatalog:
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
             ).fetchone()
             applied = (
-                {row["version"]: row["checksum"] for row in connection.execute("SELECT version, checksum FROM schema_migrations")}
+                {
+                    row["version"]: row["checksum"]
+                    for row in connection.execute("SELECT version, checksum FROM schema_migrations")
+                }
                 if has_table
                 else {}
             )
@@ -591,7 +635,9 @@ class SQLiteCatalog:
                 checksum = hashlib.sha256(normalized_content.encode("utf-8")).hexdigest()
                 if version in applied:
                     if applied[version] != checksum:
-                        raise SchemaError({"reason": "migration_checksum_mismatch", "version": version})
+                        raise SchemaError(
+                            {"reason": "migration_checksum_mismatch", "version": version}
+                        )
                     continue
                 connection.execute("BEGIN IMMEDIATE")
                 try:
@@ -622,7 +668,7 @@ def _sql_statements(script: str) -> Iterator[str]:
 
 
 def _timestamp(value: datetime) -> str:
-    if value.tzinfo is None or value.utcoffset() != timezone.utc.utcoffset(value):
+    if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
         raise ValueError("SQLite timestamps must be UTC")
     return value.isoformat().replace("+00:00", "Z")
 

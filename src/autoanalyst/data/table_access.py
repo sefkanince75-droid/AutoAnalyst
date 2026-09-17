@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
 
 import duckdb
 
 from ..domain.errors import DataError, SchemaError
 from ..storage.artifacts import ArtifactStore
 from ..storage.sqlite import SQLiteCatalog
-from .schema import DatasetColumn, INTERNAL_ROW_ORDER
+from .schema import INTERNAL_ROW_ORDER, DatasetColumn
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +52,9 @@ class TableAccess:
             ).fetchall()
         actual = {row[0]: str(row[1]) for row in described}
         if set(actual) != set(table.physical_names):
-            raise SchemaError({"reason": "parquet_catalog_schema_mismatch", "version_id": version_id})
+            raise SchemaError(
+                {"reason": "parquet_catalog_schema_mismatch", "version_id": version_id}
+            )
         return table.columns
 
     def row_count(self, version_id: str) -> int:
@@ -67,7 +69,9 @@ class TableAccess:
     def selected_columns(self, version_id: str, column_ids: tuple[str, ...]):
         table = self.resolve(version_id)
         selected = self._columns(table, column_ids)
-        projection = ", ".join(self.quote_identifier(column.physical_name, table) for column in selected)
+        projection = ", ".join(
+            self.quote_identifier(column.physical_name, table) for column in selected
+        )
         order = self.quote_identifier(INTERNAL_ROW_ORDER, table)
         with self._connection() as connection:
             return connection.execute(
@@ -83,7 +87,9 @@ class TableAccess:
     ):
         table = self.resolve(version_id)
         selected = self._columns(table, column_ids)
-        projection = ", ".join(self.quote_identifier(column.physical_name, table) for column in selected)
+        projection = ", ".join(
+            self.quote_identifier(column.physical_name, table) for column in selected
+        )
         clauses: list[str] = []
         parameters: list[object] = [str(table.parquet_path)]
         for item in filters:
@@ -122,7 +128,9 @@ class TableAccess:
     def duplicate_rows(self, version_id: str, subset_column_ids: tuple[str, ...]):
         table = self.resolve(version_id)
         subset = self._columns(table, subset_column_ids)
-        partition = ", ".join(self.quote_identifier(column.physical_name, table) for column in subset)
+        partition = ", ".join(
+            self.quote_identifier(column.physical_name, table) for column in subset
+        )
         order = self.quote_identifier(INTERNAL_ROW_ORDER, table)
         with self._connection() as connection:
             return connection.execute(
@@ -135,7 +143,9 @@ class TableAccess:
     def ordered_export(self, version_id: str, column_ids: tuple[str, ...] | None = None):
         table = self.resolve(version_id)
         selected = table.columns if column_ids is None else self._columns(table, column_ids)
-        projection = ", ".join(self.quote_identifier(column.physical_name, table) for column in selected)
+        projection = ", ".join(
+            self.quote_identifier(column.physical_name, table) for column in selected
+        )
         order = self.quote_identifier(INTERNAL_ROW_ORDER, table)
         with self._connection() as connection:
             return connection.execute(
@@ -149,7 +159,9 @@ class TableAccess:
         if artifact.media_type != "application/vnd.apache.parquet":
             raise DataError({"reason": "version_artifact_is_not_parquet", "version_id": version_id})
         if not self.artifact_store.verify(artifact):
-            raise DataError({"reason": "artifact_verification_failed", "artifact_id": artifact.artifact_id})
+            raise DataError(
+                {"reason": "artifact_verification_failed", "artifact_id": artifact.artifact_id}
+            )
         path = self.artifact_store.resolve_relative_path(artifact.relative_path)
         rows = self.catalog.list_columns(version_id)
         columns = tuple(
@@ -158,7 +170,9 @@ class TableAccess:
                 display_name=str(row["display_name"]),
                 physical_name=str(row["physical_name"]),
                 physical_type=str(row["physical_type"]),
-                semantic_hint=str(row["semantic_hint"]) if row["semantic_hint"] is not None else None,
+                semantic_hint=str(row["semantic_hint"])
+                if row["semantic_hint"] is not None
+                else None,
                 ordinal=int(row["ordinal"]),
                 is_system=bool(row["is_system"]),
             )
@@ -169,7 +183,9 @@ class TableAccess:
     @staticmethod
     def quote_identifier(physical_name: str, table: VersionTable) -> str:
         if physical_name not in table.physical_names:
-            raise SchemaError({"reason": "untrusted_physical_column", "physical_name": physical_name})
+            raise SchemaError(
+                {"reason": "untrusted_physical_column", "physical_name": physical_name}
+            )
         return f'"{physical_name.replace(chr(34), chr(34) * 2)}"'
 
     @staticmethod
@@ -192,7 +208,9 @@ class TableAccess:
             raise SchemaError({"reason": "column_not_found", "column_id": column_id}) from exc
 
     @classmethod
-    def _columns(cls, table: VersionTable, column_ids: tuple[str, ...]) -> tuple[DatasetColumn, ...]:
+    def _columns(
+        cls, table: VersionTable, column_ids: tuple[str, ...]
+    ) -> tuple[DatasetColumn, ...]:
         if not column_ids or len(set(column_ids)) != len(column_ids):
             raise SchemaError({"reason": "unique_column_selection_required"})
         return tuple(cls._column(table, column_id) for column_id in column_ids)

@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
-from multiprocessing import get_context
 import os
-from pathlib import Path
 import subprocess
 import sys
 import time
+from multiprocessing import get_context
+from pathlib import Path
 from uuid import uuid4
 
 import psutil
 
 from ..analyses.contract import AnalysisModule, ExecutionContext, ResultDraft
 from ..domain.codec import fingerprint, utc_now
-from ..domain.errors import AutoAnalystError, CancellationError, ResourceError, UnexpectedExecutionError
+from ..domain.errors import (
+    AutoAnalystError,
+    CancellationError,
+    ResourceError,
+    UnexpectedExecutionError,
+)
 from ..domain.plans import AnalysisModuleId, AnalysisSpec
 from ..domain.results import AnalysisResult, Artifact
 from ..domain.runs import AnalysisRun, RunKind, RunStatus
@@ -23,7 +28,6 @@ from ..storage.runs import RunStore
 from .budget import enforce_budget
 from .lease import activate_worker, clear_stale_lease, owned_process, release_worker, reserve_worker
 from .protocol import EventCancellationToken, EventKind, ProgressCallback, ProgressEvent
-
 
 _TERMINAL = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}
 
@@ -82,10 +86,15 @@ class ExecutionCoordinator:
                 {"reason": "run_not_pending", "run_id": run_id, "status": run.status.value}
             )
         if run.spec_id is None:
-            raise UnexpectedExecutionError({"reason": "analysis_run_missing_spec", "run_id": run_id})
+            raise UnexpectedExecutionError(
+                {"reason": "analysis_run_missing_spec", "run_id": run_id}
+            )
         spec = self.store.get_spec(run.spec_id)
         description = module.describe()
-        if description.module_id != spec.module_id or description.module_version != spec.module_version:
+        if (
+            description.module_id != spec.module_id
+            or description.module_version != spec.module_version
+        ):
             raise UnexpectedExecutionError({"reason": "module_spec_mismatch", "run_id": run_id})
         issues = module.validate(spec)
         if issues:
@@ -128,7 +137,10 @@ class ExecutionCoordinator:
                 self._register_artifacts(draft.artifacts, run_id)
             result = _result_from_draft(run_id, spec, draft)
             completed = self.store.publish_result(run_id, result)
-            if spec.module_id is AnalysisModuleId.BINARY_CLASSIFICATION and spec.operation == "final_evaluate":
+            if (
+                spec.module_id is AnalysisModuleId.BINARY_CLASSIFICATION
+                and spec.operation == "final_evaluate"
+            ):
                 from ..storage.binary import BinaryStore
 
                 training_run_id = str(spec.parameters["training_run_id"])
@@ -157,7 +169,9 @@ class ExecutionCoordinator:
         except Exception as exc:
             current = self.store.get_run(run_id)
             if current.status is RunStatus.RUNNING:
-                self.store.transition(run_id, status=RunStatus.FAILED, error_code="unexpected_execution")
+                self.store.transition(
+                    run_id, status=RunStatus.FAILED, error_code="unexpected_execution"
+                )
                 self.store.append_event(
                     run_id,
                     EventKind.FAILED.value,

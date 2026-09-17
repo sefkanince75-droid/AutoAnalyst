@@ -61,7 +61,9 @@ def test_cancel_pending_run_reaches_terminal_state_without_worker(phase3_workspa
     coordinator = ExecutionCoordinator(store)
     run = coordinator.create_run(_profiling_spec(workspace), request_key="pending-cancel")
 
-    coordinator.request_cancel(run.run_id, workspace.catalog.paths.root, cooperative_grace_seconds=0)
+    coordinator.request_cancel(
+        run.run_id, workspace.catalog.paths.root, cooperative_grace_seconds=0
+    )
 
     cancelled = store.get_run(run.run_id)
     assert cancelled.status is RunStatus.CANCELLED

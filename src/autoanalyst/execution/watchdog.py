@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 import os
-from pathlib import Path
 import threading
 import time
+from collections.abc import Callable
+from pathlib import Path
 
 import psutil
 
@@ -14,7 +14,6 @@ from ..domain.runs import RunStatus
 from ..storage.runs import RunStore
 from .lease import release_worker
 from .protocol import EventKind
-
 
 RESOURCE_ERROR_CODE = "resource_error"
 

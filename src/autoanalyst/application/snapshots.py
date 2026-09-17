@@ -5,12 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
 import shutil
 import sqlite3
 import tempfile
-from uuid import uuid4
 import zipfile
+from pathlib import Path, PurePosixPath
+from uuid import uuid4
 
 from .. import __version__
 from ..domain.codec import utc_now
@@ -18,7 +18,6 @@ from ..domain.errors import DataError, ResourceError, SchemaError
 from ..execution.lease import clear_stale_lease, owned_process
 from ..storage.artifacts import ArtifactStore
 from ..storage.sqlite import SQLiteCatalog
-
 
 SNAPSHOT_FORMAT = "autoanalyst.workspace_snapshot"
 SNAPSHOT_VERSION = "1"
@@ -141,7 +140,10 @@ class WorkspaceSnapshotService:
                 artifact = restored.get_artifact(str(item["artifact_id"]))
                 if not store.verify(artifact):
                     raise DataError(
-                        {"reason": "snapshot_restored_artifact_invalid", "artifact_id": artifact.artifact_id}
+                        {
+                            "reason": "snapshot_restored_artifact_invalid",
+                            "artifact_id": artifact.artifact_id,
+                        }
                     )
             return destination
         except Exception:
@@ -218,7 +220,10 @@ def _extract_and_verify(snapshot: Path, destination: Path) -> dict[str, object]:
         digest, size = _hash_file(path)
         if digest != item["sha256"] or size != int(item["byte_size"]):
             raise DataError(
-                {"reason": "snapshot_artifact_checksum_mismatch", "artifact_id": item["artifact_id"]}
+                {
+                    "reason": "snapshot_artifact_checksum_mismatch",
+                    "artifact_id": item["artifact_id"],
+                }
             )
     return manifest
 
@@ -267,7 +272,9 @@ def _safe_relative(value: str) -> PurePosixPath:
 
 
 def _valid_sha(value: object) -> bool:
-    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+    return (
+        isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+    )
 
 
 def _hash_file(path: Path) -> tuple[str, int]:

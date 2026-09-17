@@ -8,7 +8,9 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 
-def build_preprocessor(numeric: list[str], categorical: list[str], *, scale_numeric: bool) -> ColumnTransformer:
+def build_preprocessor(
+    numeric: list[str], categorical: list[str], *, scale_numeric: bool
+) -> ColumnTransformer:
     numeric_steps = [("impute", SimpleImputer(strategy="median"))]
     if scale_numeric:
         numeric_steps.append(("scale", StandardScaler()))

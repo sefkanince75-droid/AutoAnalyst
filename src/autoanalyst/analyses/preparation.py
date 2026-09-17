@@ -13,13 +13,27 @@ from uuid import uuid4
 
 from ..data.table_access import TableAccess
 from ..domain.codec import utc_now
-from ..domain.errors import DataError, MethodNotApplicableError, SchemaError
+from ..domain.errors import MethodNotApplicableError, SchemaError
 from ..domain.plans import AnalysisModuleId, AnalysisSpec, LearningScope
-from ..domain.results import Finding, FindingSeverity, Metric, MetricValueState, ResultOutcome, ResultTable
+from ..domain.results import (
+    Finding,
+    FindingSeverity,
+    Metric,
+    MetricValueState,
+    ResultOutcome,
+    ResultTable,
+)
 from ..preparation.engine import PreparationEngine
 from ..storage.artifacts import ArtifactStore
 from ..storage.sqlite import SQLiteCatalog
-from .contract import AnalysisDescription, ApplicabilityReport, ExecutionContext, ResourceEstimate, ResultDraft, ValidationIssue
+from .contract import (
+    AnalysisDescription,
+    ApplicabilityReport,
+    ExecutionContext,
+    ResourceEstimate,
+    ResultDraft,
+    ValidationIssue,
+)
 
 
 class PreparationModule:
@@ -69,11 +83,15 @@ class PreparationModule:
         if dataset.head_version_id != spec.input_version_id:
             blocking.append(ValidationIssue("preparation.base_not_current_head"))
         train_only = tuple(
-            step.step_id for step in recipe.ordered_steps if step.learning_scope is LearningScope.TRAIN_ONLY
+            step.step_id
+            for step in recipe.ordered_steps
+            if step.learning_scope is LearningScope.TRAIN_ONLY
         )
         if train_only:
             blocking.append(
-                ValidationIssue("preparation.train_only_step_not_previewable", {"step_ids": train_only})
+                ValidationIssue(
+                    "preparation.train_only_step_not_previewable", {"step_ids": train_only}
+                )
             )
         return ApplicabilityReport(blocking_issues=tuple(blocking))
 
@@ -91,7 +109,10 @@ class PreparationModule:
         issues = self.validate(spec)
         if issues:
             raise SchemaError(
-                {"reason": "invalid_preparation_spec", "codes": tuple(issue.code for issue in issues)}
+                {
+                    "reason": "invalid_preparation_spec",
+                    "codes": tuple(issue.code for issue in issues),
+                }
             )
         applicability = self.check_applicability(spec)
         applicability.require_runnable()
