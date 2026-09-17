@@ -27,6 +27,11 @@ jobs:
         run: uv run pytest -q
       - name: Build wheel and source distribution
         run: uv run python -m build
+      - name: Generate release environment manifest
+        shell: pwsh
+        run: |
+          uv run python tools/release_manifest.py | Out-File -Encoding utf8 .\dist\release-manifest.json
+          Copy-Item .\uv.lock .\dist\uv.lock
       - name: Build portable Windows executable
         shell: pwsh
         run: >-
@@ -49,12 +54,18 @@ jobs:
           .\dist\AutoAnalyst.exe --self-test
       - name: Create portable archive
         shell: pwsh
-        run: Compress-Archive -Path .\dist\AutoAnalyst.exe -DestinationPath .\dist\AutoAnalyst-Windows-x64.zip -Force
+        run: >-
+          Compress-Archive
+          -Path .\dist\AutoAnalyst.exe,.\dist\uv.lock,.\dist\release-manifest.json
+          -DestinationPath .\dist\AutoAnalyst-Windows-x64.zip
+          -Force
       - uses: actions/upload-artifact@v4
         with:
           name: autoanalyst-v2-windows-x64
           path: |
             dist/AutoAnalyst-Windows-x64.zip
+            dist/release-manifest.json
+            dist/uv.lock
             dist/*.whl
             dist/*.tar.gz
           if-no-files-found: error
