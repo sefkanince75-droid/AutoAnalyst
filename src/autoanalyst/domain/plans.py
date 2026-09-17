@@ -109,5 +109,7 @@ class AnalysisSpec:
             raise ValueError("AnalysisSpec cannot assign multiple roles to one column")
         if self.module_id is AnalysisModuleId.BINARY_CLASSIFICATION:
             targets = [role for role in self.column_roles if ColumnUsage.TARGET in role.usages]
-            if len(targets) != 1:
-                raise ValueError("binary_classification requires exactly one target column")
+            if self.operation == "train_validate" and len(targets) != 1:
+                raise ValueError("binary train_validate requires exactly one target column")
+            if self.operation != "train_validate" and len(targets) > 1:
+                raise ValueError("binary operations allow at most one target column")
