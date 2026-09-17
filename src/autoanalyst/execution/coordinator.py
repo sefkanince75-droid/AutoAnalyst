@@ -18,6 +18,7 @@ from ..domain.errors import AutoAnalystError, CancellationError, ResourceError, 
 from ..domain.plans import AnalysisModuleId, AnalysisSpec
 from ..domain.results import AnalysisResult, Artifact
 from ..domain.runs import AnalysisRun, RunKind, RunStatus
+from ..environment import runtime_environment_manifest
 from ..storage.runs import RunStore
 from .budget import enforce_budget
 from .lease import activate_worker, clear_stale_lease, owned_process, release_worker, reserve_worker
@@ -59,7 +60,9 @@ class ExecutionCoordinator:
             created_at=utc_now(),
             spec_id=persisted_spec.spec_id,
             parent_run_id=parent_run_id,
-            environment_manifest=environment or {},
+            environment_manifest=(
+                environment if environment is not None else runtime_environment_manifest()
+            ),
         )
         return self.store.insert_run(run)
 
