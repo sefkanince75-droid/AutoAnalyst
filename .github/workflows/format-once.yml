@@ -1,0 +1,41 @@
+name: V2 Ruff normalization
+
+on:
+  push:
+    branches: [v2-completion]
+    paths:
+      - ".github/workflows/format-once.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  normalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v2-completion
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen --group dev
+      - name: Apply safe Ruff fixes
+        run: uv run ruff check --fix src/autoanalyst tests/v2 tools || true
+      - name: Apply Ruff formatter
+        run: uv run ruff format src/autoanalyst tests/v2 tools
+      - name: Commit normalization
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No normalization changes needed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/autoanalyst tests/v2 tools
+          git commit -m "style(v2): normalize backend with Ruff"
+          git push origin HEAD:v2-completion
