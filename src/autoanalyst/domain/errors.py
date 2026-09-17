@@ -29,36 +29,40 @@ class AutoAnalystError(Exception):
         Exception.__init__(self, self.code.value)
 
 
+def _context(value: FrozenDict | dict[str, object] | None) -> FrozenDict:
+    return freeze_json({} if value is None else value)
+
+
 class DataError(AutoAnalystError):
-    def __init__(self, context: FrozenDict | dict[str, object] = FrozenDict()) -> None:
-        super().__init__(ErrorCode.DATA_ERROR, freeze_json(context))
+    def __init__(self, context: FrozenDict | dict[str, object] | None = None) -> None:
+        super().__init__(ErrorCode.DATA_ERROR, _context(context))
 
 
 class SchemaError(AutoAnalystError):
-    def __init__(self, context: FrozenDict | dict[str, object] = FrozenDict()) -> None:
-        super().__init__(ErrorCode.SCHEMA_ERROR, freeze_json(context))
+    def __init__(self, context: FrozenDict | dict[str, object] | None = None) -> None:
+        super().__init__(ErrorCode.SCHEMA_ERROR, _context(context))
 
 
 class MethodNotApplicableError(AutoAnalystError):
-    def __init__(self, context: FrozenDict | dict[str, object] = FrozenDict()) -> None:
-        super().__init__(ErrorCode.METHOD_NOT_APPLICABLE, freeze_json(context))
+    def __init__(self, context: FrozenDict | dict[str, object] | None = None) -> None:
+        super().__init__(ErrorCode.METHOD_NOT_APPLICABLE, _context(context))
 
 
 class ResourceError(AutoAnalystError):
-    def __init__(self, context: FrozenDict | dict[str, object] = FrozenDict()) -> None:
-        super().__init__(ErrorCode.RESOURCE_ERROR, freeze_json(context))
+    def __init__(self, context: FrozenDict | dict[str, object] | None = None) -> None:
+        super().__init__(ErrorCode.RESOURCE_ERROR, _context(context))
 
 
 class CancellationError(AutoAnalystError):
-    def __init__(self, context: FrozenDict | dict[str, object] = FrozenDict()) -> None:
-        super().__init__(ErrorCode.CANCELLATION, freeze_json(context))
+    def __init__(self, context: FrozenDict | dict[str, object] | None = None) -> None:
+        super().__init__(ErrorCode.CANCELLATION, _context(context))
 
 
 class DependencyError(AutoAnalystError):
-    def __init__(self, context: FrozenDict | dict[str, object] = FrozenDict()) -> None:
-        super().__init__(ErrorCode.DEPENDENCY_ERROR, freeze_json(context))
+    def __init__(self, context: FrozenDict | dict[str, object] | None = None) -> None:
+        super().__init__(ErrorCode.DEPENDENCY_ERROR, _context(context))
 
 
 class UnexpectedExecutionError(AutoAnalystError):
-    def __init__(self, context: FrozenDict | dict[str, object] = FrozenDict()) -> None:
-        super().__init__(ErrorCode.UNEXPECTED_EXECUTION, freeze_json(context))
+    def __init__(self, context: FrozenDict | dict[str, object] | None = None) -> None:
+        super().__init__(ErrorCode.UNEXPECTED_EXECUTION, _context(context))
