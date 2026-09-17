@@ -10,6 +10,7 @@ from ..bootstrap import build_runtime
 from ..domain.errors import AutoAnalystError
 from .lease import release_worker
 from .protocol import FileCancellationToken
+from .watchdog import WorkerBudgetWatchdog
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -27,11 +28,20 @@ def main(argv: list[str] | None = None) -> int:
     spec = runtime.run_store.get_spec(run.spec_id)
     module = runtime.registry.get(spec.module_id)
     cancel = FileCancellationToken(workspace / "staging" / f"cancel-{args.run_id}.flag")
+    watchdog = WorkerBudgetWatchdog(
+        runtime.run_store,
+        workspace=workspace,
+        run_id=args.run_id,
+        max_duration_seconds=spec.resource_budget.max_duration_seconds,
+        max_memory_bytes=spec.resource_budget.max_memory_bytes,
+    )
+    watchdog.start()
     try:
         runtime.coordinator.execute_inline(args.run_id, module, cancellation_event=cancel)
     except AutoAnalystError:
         return 1
     finally:
+        watchdog.stop()
         release_worker(workspace, args.run_id, pid=os.getpid())
     return 0
 
