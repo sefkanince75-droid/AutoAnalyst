@@ -25,7 +25,7 @@ jobs:
         run: uv lock --python 3.12
       - name: Commit lockfile when changed
         run: |
-          if git diff --quiet -- uv.lock; then
+          if [ -z "$(git status --porcelain -- uv.lock)" ]; then
             echo "uv.lock already current"
             exit 0
           fi
