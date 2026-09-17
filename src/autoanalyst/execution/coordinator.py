@@ -12,7 +12,7 @@ from uuid import uuid4
 from ..analyses.contract import AnalysisModule, ExecutionContext, ResultDraft
 from ..domain.codec import fingerprint, utc_now
 from ..domain.errors import AutoAnalystError, CancellationError, UnexpectedExecutionError
-from ..domain.plans import AnalysisSpec
+from ..domain.plans import AnalysisModuleId, AnalysisSpec
 from ..domain.results import AnalysisResult, Artifact
 from ..domain.runs import AnalysisRun, RunKind, RunStatus
 from ..storage.runs import RunStore
@@ -100,6 +100,11 @@ class ExecutionCoordinator:
                 self._register_artifacts(draft.artifacts, run_id)
             result = _result_from_draft(run_id, spec, draft)
             completed = self.store.publish_result(run_id, result)
+            if spec.module_id is AnalysisModuleId.BINARY_CLASSIFICATION and spec.operation == "final_evaluate":
+                from ..storage.binary import BinaryStore
+
+                training_run_id = str(spec.parameters["training_run_id"])
+                BinaryStore(self.store.catalog).mark_reported(training_run_id, run_id)
             self.store.append_event(run_id, EventKind.COMPLETED.value, stage="run")
             if progress is not None:
                 progress(ProgressEvent(EventKind.COMPLETED, "run", 1.0))
@@ -109,12 +114,16 @@ class ExecutionCoordinator:
             self.store.append_event(run_id, EventKind.CANCELLED.value, stage="run")
             raise
         except AutoAnalystError as exc:
-            self.store.transition(run_id, status=RunStatus.FAILED, error_code=exc.code.value)
-            self.store.append_event(run_id, EventKind.FAILED.value, stage="run", payload={"error_code": exc.code.value})
+            current = self.store.get_run(run_id)
+            if current.status is RunStatus.RUNNING:
+                self.store.transition(run_id, status=RunStatus.FAILED, error_code=exc.code.value)
+                self.store.append_event(run_id, EventKind.FAILED.value, stage="run", payload={"error_code": exc.code.value})
             raise
         except Exception as exc:
-            self.store.transition(run_id, status=RunStatus.FAILED, error_code="unexpected_execution")
-            self.store.append_event(run_id, EventKind.FAILED.value, stage="run", payload={"error_code": "unexpected_execution", "exception_type": type(exc).__name__})
+            current = self.store.get_run(run_id)
+            if current.status is RunStatus.RUNNING:
+                self.store.transition(run_id, status=RunStatus.FAILED, error_code="unexpected_execution")
+                self.store.append_event(run_id, EventKind.FAILED.value, stage="run", payload={"error_code": "unexpected_execution", "exception_type": type(exc).__name__})
             raise UnexpectedExecutionError({"reason": "analysis_module_crashed", "exception_type": type(exc).__name__}) from exc
 
     def _register_artifacts(self, artifacts: tuple[Artifact, ...], run_id: str) -> None:
@@ -147,11 +156,26 @@ class ExecutionCoordinator:
         run = self.store.get_run(run_id)
         if run.status is not RunStatus.PENDING:
             raise UnexpectedExecutionError({"reason": "run_not_pending", "run_id": run_id, "status": run.status.value})
-        command = [sys.executable, "-m", "autoanalyst.execution.worker", "--workspace", str(Path(workspace)), "--run-id", run_id]
+        workspace_path = Path(workspace).resolve()
+        self._cancel_path(run_id, workspace_path).unlink(missing_ok=True)
+        command = [sys.executable, "-m", "autoanalyst.execution.worker", "--workspace", str(workspace_path), "--run-id", run_id]
         env = os.environ.copy()
         src_root = str(Path(__file__).resolve().parents[2])
         env["PYTHONPATH"] = src_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         return subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+
+    def request_cancel(self, run_id: str, workspace: str | Path) -> None:
+        run = self.store.get_run(run_id)
+        if run.status in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}:
+            return
+        path = self._cancel_path(run_id, Path(workspace).resolve())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("cancel\n", encoding="utf-8")
+        self.store.append_event(run_id, "cancel_requested", stage="run")
+
+    @staticmethod
+    def _cancel_path(run_id: str, workspace: Path) -> Path:
+        return workspace / "staging" / f"cancel-{run_id}.flag"
 
 
 def new_cancellation_event():
