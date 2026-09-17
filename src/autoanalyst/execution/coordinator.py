@@ -7,21 +7,28 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 from uuid import uuid4
+
+import psutil
 
 from ..analyses.contract import AnalysisModule, ExecutionContext, ResultDraft
 from ..domain.codec import fingerprint, utc_now
-from ..domain.errors import AutoAnalystError, CancellationError, UnexpectedExecutionError
+from ..domain.errors import AutoAnalystError, CancellationError, ResourceError, UnexpectedExecutionError
 from ..domain.plans import AnalysisModuleId, AnalysisSpec
 from ..domain.results import AnalysisResult, Artifact
 from ..domain.runs import AnalysisRun, RunKind, RunStatus
 from ..storage.runs import RunStore
 from .budget import enforce_budget
+from .lease import activate_worker, clear_stale_lease, owned_process, release_worker, reserve_worker
 from .protocol import EventCancellationToken, EventKind, ProgressCallback, ProgressEvent
 
 
+_TERMINAL = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}
+
+
 class ExecutionCoordinator:
-    """Owns run state transitions; modules own only deterministic computation."""
+    """Owns run state transitions and the single heavy-worker slot."""
 
     def __init__(self, store: RunStore) -> None:
         self.store = store
@@ -68,7 +75,9 @@ class ExecutionCoordinator:
         if run.status is RunStatus.COMPLETED:
             return run
         if run.status is not RunStatus.PENDING:
-            raise UnexpectedExecutionError({"reason": "run_not_pending", "run_id": run_id, "status": run.status.value})
+            raise UnexpectedExecutionError(
+                {"reason": "run_not_pending", "run_id": run_id, "status": run.status.value}
+            )
         if run.spec_id is None:
             raise UnexpectedExecutionError({"reason": "analysis_run_missing_spec", "run_id": run_id})
         spec = self.store.get_spec(run.spec_id)
@@ -77,7 +86,12 @@ class ExecutionCoordinator:
             raise UnexpectedExecutionError({"reason": "module_spec_mismatch", "run_id": run_id})
         issues = module.validate(spec)
         if issues:
-            raise UnexpectedExecutionError({"reason": "analysis_spec_validation_failed", "codes": tuple(item.code for item in issues)})
+            raise UnexpectedExecutionError(
+                {
+                    "reason": "analysis_spec_validation_failed",
+                    "codes": tuple(item.code for item in issues),
+                }
+            )
         module.check_applicability(spec).require_runnable()
         enforce_budget(module.estimate_resources(spec), spec.resource_budget)
 
@@ -87,11 +101,22 @@ class ExecutionCoordinator:
 
         def emit(event: ProgressEvent) -> None:
             token.raise_if_cancelled()
-            self.store.append_event(run_id, event.kind.value, stage=event.stage, payload={"fraction": event.fraction, **dict(event.payload)})
+            self.store.append_event(
+                run_id,
+                event.kind.value,
+                stage=event.stage,
+                payload={"fraction": event.fraction, **dict(event.payload)},
+            )
             if progress is not None:
                 progress(event)
 
-        context = ExecutionContext(run_id=running.run_id, input_version_id=spec.input_version_id, seed=spec.seed, cancellation=token, environment=running.environment_manifest)
+        context = ExecutionContext(
+            run_id=running.run_id,
+            input_version_id=spec.input_version_id,
+            seed=spec.seed,
+            cancellation=token,
+            environment=running.environment_manifest,
+        )
         try:
             emit(ProgressEvent(EventKind.PROGRESS, "analysis", 0.0))
             draft = module.run(spec, context)
@@ -110,27 +135,46 @@ class ExecutionCoordinator:
                 progress(ProgressEvent(EventKind.COMPLETED, "run", 1.0))
             return completed
         except CancellationError:
-            self.store.transition(run_id, status=RunStatus.CANCELLED)
-            self.store.append_event(run_id, EventKind.CANCELLED.value, stage="run")
+            current = self.store.get_run(run_id)
+            if current.status in {RunStatus.PENDING, RunStatus.RUNNING}:
+                self.store.transition(run_id, status=RunStatus.CANCELLED)
+                self.store.append_event(run_id, EventKind.CANCELLED.value, stage="run")
             raise
         except AutoAnalystError as exc:
             current = self.store.get_run(run_id)
             if current.status is RunStatus.RUNNING:
                 self.store.transition(run_id, status=RunStatus.FAILED, error_code=exc.code.value)
-                self.store.append_event(run_id, EventKind.FAILED.value, stage="run", payload={"error_code": exc.code.value})
+                self.store.append_event(
+                    run_id,
+                    EventKind.FAILED.value,
+                    stage="run",
+                    payload={"error_code": exc.code.value},
+                )
             raise
         except Exception as exc:
             current = self.store.get_run(run_id)
             if current.status is RunStatus.RUNNING:
                 self.store.transition(run_id, status=RunStatus.FAILED, error_code="unexpected_execution")
-                self.store.append_event(run_id, EventKind.FAILED.value, stage="run", payload={"error_code": "unexpected_execution", "exception_type": type(exc).__name__})
-            raise UnexpectedExecutionError({"reason": "analysis_module_crashed", "exception_type": type(exc).__name__}) from exc
+                self.store.append_event(
+                    run_id,
+                    EventKind.FAILED.value,
+                    stage="run",
+                    payload={
+                        "error_code": "unexpected_execution",
+                        "exception_type": type(exc).__name__,
+                    },
+                )
+            raise UnexpectedExecutionError(
+                {"reason": "analysis_module_crashed", "exception_type": type(exc).__name__}
+            ) from exc
 
     def _register_artifacts(self, artifacts: tuple[Artifact, ...], run_id: str) -> None:
         with self.store.catalog.transaction() as connection:
             for artifact in artifacts:
                 if artifact.owner_run_id != run_id:
-                    raise UnexpectedExecutionError({"reason": "artifact_run_mismatch", "artifact_id": artifact.artifact_id})
+                    raise UnexpectedExecutionError(
+                        {"reason": "artifact_run_mismatch", "artifact_id": artifact.artifact_id}
+                    )
                 connection.execute(
                     """INSERT INTO artifacts
                        (artifact_id, project_id, owner_run_id, kind, relative_path, media_type,
@@ -152,26 +196,109 @@ class ExecutionCoordinator:
                 )
 
     def start_worker_process(self, run_id: str, workspace: str | Path) -> subprocess.Popen[bytes]:
-        """Launch the repository worker entry point; it reconstructs runtime from workspace."""
+        """Launch one owned worker process for the workspace.
+
+        The lease is atomically reserved before spawn so two browser sessions cannot start
+        concurrent heavy workers. PID reuse is guarded by the process creation timestamp.
+        """
         run = self.store.get_run(run_id)
         if run.status is not RunStatus.PENDING:
-            raise UnexpectedExecutionError({"reason": "run_not_pending", "run_id": run_id, "status": run.status.value})
+            raise UnexpectedExecutionError(
+                {"reason": "run_not_pending", "run_id": run_id, "status": run.status.value}
+            )
         workspace_path = Path(workspace).resolve()
+        clear_stale_lease(workspace_path)
+        reserve_worker(workspace_path, run_id)
         self._cancel_path(run_id, workspace_path).unlink(missing_ok=True)
-        command = [sys.executable, "-m", "autoanalyst.execution.worker", "--workspace", str(workspace_path), "--run-id", run_id]
+        command = [
+            sys.executable,
+            "-m",
+            "autoanalyst.execution.worker",
+            "--workspace",
+            str(workspace_path),
+            "--run-id",
+            run_id,
+        ]
         env = os.environ.copy()
         src_root = str(Path(__file__).resolve().parents[2])
-        env["PYTHONPATH"] = src_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-        return subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+        env["PYTHONPATH"] = src_root + (
+            os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+        )
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=env,
+            )
+            activate_worker(workspace_path, run_id, process.pid)
+            return process
+        except Exception as exc:
+            release_worker(workspace_path, run_id)
+            if isinstance(exc, AutoAnalystError):
+                raise
+            raise ResourceError(
+                {"reason": "worker_start_failed", "exception_type": type(exc).__name__}
+            ) from exc
 
-    def request_cancel(self, run_id: str, workspace: str | Path) -> None:
+    def request_cancel(
+        self,
+        run_id: str,
+        workspace: str | Path,
+        *,
+        cooperative_grace_seconds: float = 3.0,
+        terminate_grace_seconds: float = 1.5,
+    ) -> None:
+        """Cancel a pending/running job and stop only its owned worker.
+
+        Cooperative cancellation gets the first three seconds. If the worker is still alive,
+        only the process whose PID and creation time match the workspace lease is terminated.
+        """
         run = self.store.get_run(run_id)
-        if run.status in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}:
+        if run.status in _TERMINAL:
             return
-        path = self._cancel_path(run_id, Path(workspace).resolve())
+        workspace_path = Path(workspace).resolve()
+        path = self._cancel_path(run_id, workspace_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("cancel\n", encoding="utf-8")
         self.store.append_event(run_id, "cancel_requested", stage="run")
+
+        process = owned_process(workspace_path, run_id)
+        if process is None:
+            self._finish_cancel_if_active(run_id)
+            release_worker(workspace_path, run_id)
+            return
+
+        deadline = time.monotonic() + max(0.0, cooperative_grace_seconds)
+        while time.monotonic() < deadline:
+            current = self.store.get_run(run_id)
+            if current.status in _TERMINAL or not _process_alive(process):
+                release_worker(workspace_path, run_id, pid=process.pid)
+                return
+            time.sleep(0.05)
+
+        if _process_alive(process):
+            try:
+                process.terminate()
+                process.wait(timeout=max(0.0, terminate_grace_seconds))
+            except psutil.TimeoutExpired:
+                try:
+                    process.kill()
+                    process.wait(timeout=0.5)
+                except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+                    pass
+            except psutil.NoSuchProcess:
+                pass
+        self._finish_cancel_if_active(run_id)
+        release_worker(workspace_path, run_id, pid=process.pid)
+
+    def _finish_cancel_if_active(self, run_id: str) -> None:
+        current = self.store.get_run(run_id)
+        if current.status not in {RunStatus.PENDING, RunStatus.RUNNING}:
+            return
+        self.store.transition(run_id, status=RunStatus.CANCELLED)
+        self.store.append_event(run_id, EventKind.CANCELLED.value, stage="run")
 
     @staticmethod
     def _cancel_path(run_id: str, workspace: Path) -> Path:
@@ -180,6 +307,13 @@ class ExecutionCoordinator:
 
 def new_cancellation_event():
     return get_context("spawn").Event()
+
+
+def _process_alive(process: psutil.Process) -> bool:
+    try:
+        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return False
 
 
 def _result_from_draft(run_id: str, spec: AnalysisSpec, draft: ResultDraft) -> AnalysisResult:
