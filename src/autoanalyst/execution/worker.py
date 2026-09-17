@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from ..bootstrap import build_runtime
 from ..domain.errors import AutoAnalystError
+from .lease import release_worker
 from .protocol import FileCancellationToken
 
 
@@ -16,10 +18,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id", required=True)
     args = parser.parse_args(argv)
 
-    workspace = Path(args.workspace)
+    workspace = Path(args.workspace).resolve()
     runtime = build_runtime(workspace)
     run = runtime.run_store.get_run(args.run_id)
     if run.spec_id is None:
+        release_worker(workspace, args.run_id, pid=os.getpid())
         return 2
     spec = runtime.run_store.get_spec(run.spec_id)
     module = runtime.registry.get(spec.module_id)
@@ -28,6 +31,8 @@ def main(argv: list[str] | None = None) -> int:
         runtime.coordinator.execute_inline(args.run_id, module, cancellation_event=cancel)
     except AutoAnalystError:
         return 1
+    finally:
+        release_worker(workspace, args.run_id, pid=os.getpid())
     return 0
 
 
