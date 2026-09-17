@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import cast
 from uuid import uuid4
 
 from ..domain.codec import utc_now
@@ -44,4 +45,7 @@ class ProjectService:
             archived_at=current.archived_at,
             schema_version=current.schema_version,
         )
-        return self.catalog.rename_project(project_id, validated.name, validated.updated_at)
+        return cast(
+            Project,
+            self.catalog.rename_project(project_id, validated.name, validated.updated_at),
+        )
