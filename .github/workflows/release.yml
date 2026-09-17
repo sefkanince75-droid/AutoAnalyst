@@ -1,0 +1,60 @@
+name: V2 Release Candidate
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v2.*"
+
+permissions:
+  contents: read
+
+jobs:
+  windows-portable:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.22"
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Sync frozen release environment
+        run: uv sync --frozen --group dev --group desktop
+      - name: Full regression suite
+        run: uv run pytest -q
+      - name: Build wheel and source distribution
+        run: uv run python -m build
+      - name: Build portable Windows executable
+        shell: pwsh
+        run: >-
+          uv run pyinstaller --noconfirm --clean --onefile
+          --name AutoAnalyst
+          --add-data "app.py;."
+          --add-data "uv.lock;."
+          --add-data "src/autoanalyst/storage/migrations;autoanalyst/storage/migrations"
+          --collect-all streamlit
+          --collect-data autoanalyst
+          --hidden-import autoanalyst.execution.worker
+          src/autoanalyst/desktop.py
+      - name: Offline executable smoke test
+        shell: pwsh
+        run: |
+          $env:NO_PROXY = "*"
+          $env:HTTP_PROXY = "http://127.0.0.1:9"
+          $env:HTTPS_PROXY = "http://127.0.0.1:9"
+          .\dist\AutoAnalyst.exe --version
+          .\dist\AutoAnalyst.exe --self-test
+      - name: Create portable archive
+        shell: pwsh
+        run: Compress-Archive -Path .\dist\AutoAnalyst.exe -DestinationPath .\dist\AutoAnalyst-Windows-x64.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: autoanalyst-v2-windows-x64
+          path: |
+            dist/AutoAnalyst-Windows-x64.zip
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
