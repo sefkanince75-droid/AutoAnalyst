@@ -12,8 +12,10 @@ from .datasets import ColumnRole, ColumnUsage
 
 class LearningScope(str, Enum):
     NONE = "none"
-    FULL_DATASET = "full_dataset"
-    TRAINING_ONLY = "training_only"
+    DATASET = "dataset"
+    TRAIN_ONLY = "train_only"
+    FULL_DATASET = "dataset"
+    TRAINING_ONLY = "train_only"
 
 
 class AnalysisModuleId(str, Enum):

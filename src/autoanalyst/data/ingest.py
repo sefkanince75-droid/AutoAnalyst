@@ -224,8 +224,11 @@ def _canonical_scalar(value: Any) -> dict[str, object]:
     if isinstance(value, int):
         return {"type": "integer", "value": value}
     if isinstance(value, float):
-        if not math.isfinite(value):
-            raise DataError({"reason": "non_finite_csv_value"})
+        if math.isinf(value):
+            return {
+                "type": "float",
+                "state": "positive_infinity" if value > 0 else "negative_infinity",
+            }
         return {"type": "float", "value": value}
     if isinstance(value, (datetime, date)):
         return {"type": "datetime", "value": value.isoformat()}

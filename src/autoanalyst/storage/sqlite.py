@@ -7,12 +7,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import json
 import os
 from pathlib import Path
 import sqlite3
 from uuid import uuid4
 
-from ..domain.codec import utc_now
+from ..domain.codec import canonical_json, utc_now
 from ..domain.datasets import Dataset, DatasetSource, DatasetVersion, DatasetVersionKind, SourceFormat
 from ..domain.errors import DataError, SchemaError
 from ..domain.results import Artifact
@@ -280,6 +281,296 @@ class SQLiteCatalog:
             _move_head(connection, _dataset(dataset_row), version_id, reason, utc_now())
         return self.get_dataset(dataset_id)
 
+    def insert_preparation_recipe(self, recipe) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT INTO preparation_recipes VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    recipe.recipe_id,
+                    recipe.project_id,
+                    recipe.base_version_id,
+                    recipe.recipe_hash,
+                    _timestamp(recipe.created_at),
+                    recipe.schema_version,
+                ),
+            )
+            for step in recipe.ordered_steps:
+                connection.execute(
+                    "INSERT INTO preparation_steps VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        recipe.recipe_id,
+                        step.position,
+                        step.step_id,
+                        step.operation,
+                        step.operation_version,
+                        canonical_json(step.parameters),
+                        canonical_json(step.affected_column_ids),
+                        step.learning_scope.value,
+                        step.schema_version,
+                    ),
+                )
+
+    def get_preparation_recipe(self, recipe_id: str):
+        from ..domain.plans import LearningScope, PreparationRecipe, PreparationStep
+
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM preparation_recipes WHERE recipe_id = ?", (recipe_id,)
+            ).fetchone()
+            steps = tuple(
+                connection.execute(
+                    "SELECT * FROM preparation_steps WHERE recipe_id = ? ORDER BY position",
+                    (recipe_id,),
+                )
+            )
+        if row is None:
+            raise DataError({"reason": "preparation_recipe_not_found", "recipe_id": recipe_id})
+        return PreparationRecipe(
+            recipe_id=row["recipe_id"],
+            project_id=row["project_id"],
+            base_version_id=row["base_version_id"],
+            ordered_steps=tuple(
+                PreparationStep(
+                    step_id=step["step_id"],
+                    position=step["position"],
+                    operation=step["operation"],
+                    operation_version=step["operation_version"],
+                    parameters=json.loads(step["parameters_json"]),
+                    affected_column_ids=tuple(json.loads(step["affected_column_ids_json"])),
+                    learning_scope=LearningScope(step["learning_scope"]),
+                    schema_version=step["schema_version"],
+                )
+                for step in steps
+            ),
+            recipe_hash=row["recipe_hash"],
+            created_at=_datetime(row["created_at"]),
+            schema_version=row["schema_version"],
+        )
+
+    def insert_preparation_preview(self, preview, artifact: Artifact) -> None:
+        with self.transaction() as connection:
+            _insert_artifact(connection, artifact)
+            connection.execute(
+                """INSERT INTO preparation_previews VALUES
+                   (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    preview.preview_id,
+                    preview.recipe_id,
+                    preview.recipe_hash,
+                    preview.base_version_id,
+                    preview.expected_head_revision,
+                    preview.status.value,
+                    preview.candidate_artifact_id,
+                    preview.before_row_count,
+                    preview.after_row_count,
+                    preview.before_column_count,
+                    preview.after_column_count,
+                    canonical_json(tuple(_step_result_payload(item) for item in preview.step_results)),
+                    canonical_json(preview.warnings),
+                    canonical_json(preview.sample_changes),
+                    canonical_json(tuple(_column_payload(item) for item in preview.candidate_columns)),
+                    canonical_json(preview.append_input_version_ids),
+                    preview.content_fingerprint,
+                    preview.schema_hash,
+                    _timestamp(preview.created_at),
+                    _timestamp(preview.expires_at),
+                    preview.applied_version_id,
+                    preview.schema_version,
+                ),
+            )
+
+    def get_preparation_preview(self, preview_id: str):
+        from ..data.schema import DatasetColumn
+        from ..preparation.engine import PreparationPreview, PreviewStatus, StepExecutionResult
+
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM preparation_previews WHERE preview_id = ?", (preview_id,)
+            ).fetchone()
+        if row is None:
+            raise DataError({"reason": "preparation_preview_not_found", "preview_id": preview_id})
+        step_results = tuple(
+            StepExecutionResult(
+                step_id=item["step_id"],
+                affected_row_count=item["affected_row_count"],
+                affected_cell_count=item["affected_cell_count"],
+                resolved_values=item["resolved_values"],
+                warnings=tuple(item["warnings"]),
+                sample_row_ids=tuple(item["sample_row_ids"]),
+                schema_version=item["schema_version"],
+            )
+            for item in json.loads(row["step_results_json"])
+        )
+        columns = tuple(
+            DatasetColumn(
+                column_id=item["column_id"],
+                display_name=item["display_name"],
+                physical_name=item["physical_name"],
+                physical_type=item["physical_type"],
+                semantic_hint=item["semantic_hint"],
+                ordinal=item["ordinal"],
+                is_system=item["is_system"],
+            )
+            for item in json.loads(row["candidate_columns_json"])
+        )
+        return PreparationPreview(
+            preview_id=row["preview_id"],
+            recipe_id=row["recipe_id"],
+            recipe_hash=row["recipe_hash"],
+            base_version_id=row["base_version_id"],
+            expected_head_revision=row["expected_head_revision"],
+            status=PreviewStatus(row["status"]),
+            candidate_artifact_id=row["candidate_artifact_id"],
+            before_row_count=row["before_row_count"],
+            after_row_count=row["after_row_count"],
+            before_column_count=row["before_column_count"],
+            after_column_count=row["after_column_count"],
+            step_results=step_results,
+            warnings=tuple(json.loads(row["warnings_json"])),
+            sample_changes=tuple(json.loads(row["sample_changes_json"])),
+            candidate_columns=columns,
+            append_input_version_ids=tuple(json.loads(row["append_input_version_ids_json"])),
+            content_fingerprint=row["content_fingerprint"],
+            schema_hash=row["schema_hash"],
+            created_at=_datetime(row["created_at"]),
+            expires_at=_datetime(row["expires_at"]),
+            applied_version_id=row["applied_version_id"],
+            schema_version=row["schema_version"],
+        )
+
+    def apply_preparation_preview(
+        self,
+        preview_id: str,
+        version: DatasetVersion,
+        *,
+        verify_artifact,
+        now: datetime,
+    ) -> DatasetVersion:
+        with self.transaction() as connection:
+            preview = connection.execute(
+                "SELECT * FROM preparation_previews WHERE preview_id = ?", (preview_id,)
+            ).fetchone()
+            if preview is None:
+                raise DataError({"reason": "preparation_preview_not_found", "preview_id": preview_id})
+            if preview["status"] == "applied":
+                applied = connection.execute(
+                    "SELECT * FROM dataset_versions WHERE version_id = ?",
+                    (preview["applied_version_id"],),
+                ).fetchone()
+                if applied is None:
+                    raise SchemaError({"reason": "applied_preview_version_missing"})
+                return _version(applied)
+            if _datetime(preview["expires_at"]) <= now:
+                raise SchemaError({"reason": "preparation_preview_expired", "preview_id": preview_id})
+            recipe = connection.execute(
+                "SELECT * FROM preparation_recipes WHERE recipe_id = ?", (preview["recipe_id"],)
+            ).fetchone()
+            if recipe is None or recipe["recipe_hash"] != preview["recipe_hash"]:
+                raise SchemaError({"reason": "preparation_recipe_hash_mismatch"})
+            base = connection.execute(
+                "SELECT * FROM dataset_versions WHERE version_id = ?", (preview["base_version_id"],)
+            ).fetchone()
+            dataset = connection.execute(
+                "SELECT * FROM datasets WHERE dataset_id = ?", (base["dataset_id"],)
+            ).fetchone()
+            if (
+                dataset["head_version_id"] != preview["base_version_id"]
+                or dataset["head_revision"] != preview["expected_head_revision"]
+            ):
+                raise SchemaError(
+                    {
+                        "reason": "preparation_preview_stale",
+                        "expected_head_revision": preview["expected_head_revision"],
+                        "actual_head_revision": dataset["head_revision"],
+                    }
+                )
+            artifact_row = connection.execute(
+                "SELECT * FROM artifacts WHERE artifact_id = ?", (preview["candidate_artifact_id"],)
+            ).fetchone()
+            artifact = _artifact(artifact_row) if artifact_row else None
+            if artifact is None or not verify_artifact(artifact):
+                raise DataError(
+                    {"reason": "artifact_verification_failed", "artifact_id": preview["candidate_artifact_id"]}
+                )
+            if version.table_artifact_id != preview["candidate_artifact_id"]:
+                raise SchemaError({"reason": "candidate_artifact_mismatch"})
+            expected_version_fields = {
+                "dataset_id": base["dataset_id"],
+                "recipe_id": preview["recipe_id"],
+                "created_by_run_id": preview_id,
+                "row_count": preview["after_row_count"],
+                "column_count": preview["after_column_count"],
+                "schema_hash": preview["schema_hash"],
+                "content_fingerprint": preview["content_fingerprint"],
+            }
+            if any(getattr(version, key) != value for key, value in expected_version_fields.items()):
+                raise SchemaError({"reason": "prepared_version_metadata_mismatch"})
+            if version.kind is not DatasetVersionKind.PREPARED:
+                raise SchemaError({"reason": "prepared_version_kind_required"})
+            _insert_version(connection, version)
+            for column in json.loads(preview["candidate_columns_json"]):
+                connection.execute(
+                    """INSERT INTO dataset_columns
+                       (version_id, column_id, display_name, physical_name, physical_type,
+                        semantic_hint, ordinal, is_system) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        version.version_id,
+                        column["column_id"],
+                        column["display_name"],
+                        column["physical_name"],
+                        column["physical_type"],
+                        column["semantic_hint"],
+                        column["ordinal"],
+                        int(column["is_system"]),
+                    ),
+                )
+            input_ids = (preview["base_version_id"],) + tuple(
+                json.loads(preview["append_input_version_ids_json"])
+            )
+            seen_sources: set[str] = set()
+            source_order = 0
+            for input_order, input_version_id in enumerate(input_ids):
+                connection.execute(
+                    "INSERT INTO dataset_version_lineage VALUES (?, ?, ?, ?, ?)",
+                    (
+                        version.version_id,
+                        input_version_id,
+                        input_order,
+                        "base" if input_order == 0 else "append",
+                        preview["recipe_id"],
+                    ),
+                )
+                sources = connection.execute(
+                    "SELECT source_id FROM version_inputs WHERE version_id = ? ORDER BY input_order",
+                    (input_version_id,),
+                ).fetchall()
+                for source in sources:
+                    if source["source_id"] not in seen_sources:
+                        connection.execute(
+                            "INSERT INTO version_inputs VALUES (?, ?, ?)",
+                            (version.version_id, source["source_id"], source_order),
+                        )
+                        seen_sources.add(source["source_id"])
+                        source_order += 1
+            _move_head(connection, _dataset(dataset), version.version_id, "preparation_apply", now)
+            cursor = connection.execute(
+                """UPDATE preparation_previews SET status = 'applied', applied_version_id = ?
+                   WHERE preview_id = ? AND status = 'ready'""",
+                (version.version_id, preview_id),
+            )
+            if cursor.rowcount != 1:
+                raise SchemaError({"reason": "preparation_preview_status_conflict"})
+        return version
+
+    def get_version_lineage(self, version_id: str) -> tuple[dict[str, object], ...]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM dataset_version_lineage WHERE version_id = ?
+                   ORDER BY input_order""",
+                (version_id,),
+            )
+            return tuple(dict(row) for row in rows)
+
     def _apply_migrations(self) -> None:
         migration_files = sorted(self.migrations_dir.glob("[0-9][0-9][0-9][0-9]_*.sql"))
         if not migration_files:
@@ -484,3 +775,27 @@ def _move_head(
             _timestamp(changed_at),
         ),
     )
+
+
+def _step_result_payload(result) -> dict[str, object]:
+    return {
+        "step_id": result.step_id,
+        "affected_row_count": result.affected_row_count,
+        "affected_cell_count": result.affected_cell_count,
+        "resolved_values": result.resolved_values,
+        "warnings": result.warnings,
+        "sample_row_ids": result.sample_row_ids,
+        "schema_version": result.schema_version,
+    }
+
+
+def _column_payload(column) -> dict[str, object]:
+    return {
+        "column_id": column.column_id,
+        "display_name": column.display_name,
+        "physical_name": column.physical_name,
+        "physical_type": column.physical_type,
+        "semantic_hint": column.semantic_hint,
+        "ordinal": column.ordinal,
+        "is_system": column.is_system,
+    }
