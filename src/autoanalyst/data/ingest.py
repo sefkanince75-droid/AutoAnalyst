@@ -81,6 +81,13 @@ class CSVIngestor:
         if dataframe.empty:
             raise DataError({"reason": "csv_has_no_rows"})
 
+        parse_contract = {
+            "format": "csv",
+            "delimiter": delimiter,
+            "encoding": encoding.lower(),
+            "header": True,
+        }
+        parse_contract_json = canonical_json(parse_contract)
         version_id = str(uuid4())
         columns = build_columns(
             version_id, list(headers), [str(dtype) for dtype in dataframe.dtypes]
@@ -93,19 +100,13 @@ class CSVIngestor:
             0,
             columns[0].physical_name,
             [
-                str(uuid5(NAMESPACE_URL, f"autoanalyst:{raw_sha256}:{index}"))
+                _row_id(raw_sha256, parse_contract_json, index)
                 for index in range(len(canonical))
             ],
         )
         canonical.insert(1, columns[1].physical_name, range(len(canonical)))
         canonical = canonical[[column.physical_name for column in columns]]
 
-        parse_contract = {
-            "format": "csv",
-            "delimiter": delimiter,
-            "encoding": encoding.lower(),
-            "header": True,
-        }
         content_fingerprint = _content_fingerprint(dataframe, headers, parse_contract)
         table_artifact = self._write_parquet(canonical, project_id, import_id)
         imported_at = utc_now()
@@ -130,7 +131,7 @@ class CSVIngestor:
             column_count=len(headers),
             schema_hash=schema_fingerprint(columns),
             content_fingerprint=content_fingerprint,
-            parse_contract=canonical_json(parse_contract),
+            parse_contract=parse_contract_json,
         )
         self.catalog.publish_dataset_import(
             artifacts=(raw_artifact, table_artifact),
@@ -168,6 +169,11 @@ class CSVIngestor:
         except Exception:
             staged.staging_path.unlink(missing_ok=True)
             raise
+
+
+def _row_id(raw_sha256: str, parse_contract_json: str, row_order: int) -> str:
+    identity = f"autoanalyst:{raw_sha256}:{parse_contract_json}:{row_order}"
+    return str(uuid5(NAMESPACE_URL, identity))
 
 
 def _read_source(source: bytes | bytearray | str | Path) -> tuple[bytes, str | None]:
