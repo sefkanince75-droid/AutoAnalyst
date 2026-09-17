@@ -8,7 +8,7 @@ from typing import Protocol, runtime_checkable
 from ..domain.codec import FrozenDict, freeze_json, require_uuid
 from ..domain.errors import CancellationError, MethodNotApplicableError
 from ..domain.plans import AnalysisModuleId, AnalysisSpec
-from ..domain.results import ChartSpec, Finding, Metric, ResultOutcome, ResultTable
+from ..domain.results import Artifact, ChartSpec, Finding, Metric, ResultOutcome, ResultTable
 
 
 @runtime_checkable
@@ -26,11 +26,7 @@ class ExecutionContext:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "run_id", require_uuid(self.run_id, "run_id"))
-        object.__setattr__(
-            self,
-            "input_version_id",
-            require_uuid(self.input_version_id, "input_version_id"),
-        )
+        object.__setattr__(self, "input_version_id", require_uuid(self.input_version_id, "input_version_id"))
         object.__setattr__(self, "environment", freeze_json(self.environment))
         if self.seed < 0:
             raise ValueError("ExecutionContext seed cannot be negative")
@@ -76,9 +72,7 @@ class ApplicabilityReport:
 
     def require_runnable(self) -> None:
         if not self.can_run:
-            raise MethodNotApplicableError(
-                {"blocking_codes": tuple(issue.code for issue in self.blocking_issues)}
-            )
+            raise MethodNotApplicableError({"blocking_codes": tuple(issue.code for issue in self.blocking_issues)})
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +96,7 @@ class ResultDraft:
     findings: tuple[Finding, ...] = ()
     tables: tuple[ResultTable, ...] = ()
     charts: tuple[ChartSpec, ...] = ()
+    artifacts: tuple[Artifact, ...] = ()
     methodology: FrozenDict = field(default_factory=FrozenDict)
     sample_summary: FrozenDict = field(default_factory=FrozenDict)
     provenance: FrozenDict = field(default_factory=FrozenDict)
@@ -115,11 +110,7 @@ class ResultDraft:
 @runtime_checkable
 class AnalysisModule(Protocol):
     def describe(self) -> AnalysisDescription: ...
-
     def validate(self, spec: AnalysisSpec) -> tuple[ValidationIssue, ...]: ...
-
     def check_applicability(self, spec: AnalysisSpec) -> ApplicabilityReport: ...
-
     def estimate_resources(self, spec: AnalysisSpec) -> ResourceEstimate: ...
-
     def run(self, spec: AnalysisSpec, context: ExecutionContext) -> ResultDraft: ...
