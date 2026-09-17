@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from streamlit.testing.v1 import AppTest
+
 from autoanalyst.application import DatasetService, ProjectService
 from autoanalyst.data import CSVIngestor
 from autoanalyst.storage import ArtifactStore, SQLiteCatalog
-from streamlit.testing.v1 import AppTest
 
 ROOT = Path(__file__).parents[2]
 
