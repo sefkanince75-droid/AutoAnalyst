@@ -11,6 +11,7 @@ from autoanalyst.domain.plans import AnalysisModuleId, AnalysisSpec, ResourceBud
 from autoanalyst.domain.runs import RunStatus
 from autoanalyst.execution.coordinator import ExecutionCoordinator
 from autoanalyst.storage import ArtifactStore, SQLiteCatalog
+from autoanalyst.storage.binary import BinaryStore
 from autoanalyst.storage.runs import RunStore
 
 
@@ -96,6 +97,8 @@ def test_binary_train_and_persistent_final_holdout(tmp_path):
     assert result is not None
     assert result.provenance["positive_label"]["value"] == 1
     assert result.provenance["split_artifact"]["sha256"]
+    metric_names = {metric.name for metric in result.metrics}
+    assert {"precision", "recall", "average_precision", "tn", "fp", "fn", "tp"} <= metric_names
 
     recommendation = result.provenance.get("recommended_model")
     assert recommendation is not None
@@ -113,6 +116,12 @@ def test_binary_train_and_persistent_final_holdout(tmp_path):
         final_run.run_id, module, cancellation_event=_Event()
     )
     assert final_completed.status is RunStatus.COMPLETED
-    lock = module.binary_store.get_holdout_lock(training_run.run_id)
+    lock = BinaryStore(catalog).get_holdout_lock(training_run.run_id)
     assert lock is not None
     assert lock["final_run_id"] == final_run.run_id
+    assert lock["status"] == "reported"
+
+    final_result = run_store.result_for_run(final_run.run_id)
+    assert final_result is not None
+    final_metric_names = {metric.name for metric in final_result.metrics}
+    assert {"precision", "recall", "average_precision", "tn", "fp", "fn", "tp"} <= final_metric_names
