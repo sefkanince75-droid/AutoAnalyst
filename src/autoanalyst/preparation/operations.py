@@ -228,7 +228,8 @@ def validate_parameters(operation: str, parameters: FrozenDict | dict[str, Any])
 
 
 def affected_column_ids(operation: str, parameters: FrozenDict) -> tuple[str, ...]:
-    operation_id = OperationId(operation)
+    # Validate the operation id even when it has no column-scoped parameters.
+    OperationId(operation)
     if "column_id" in parameters:
         return (str(parameters["column_id"]),)
     if "column_ids" in parameters:
