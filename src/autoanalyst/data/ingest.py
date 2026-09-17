@@ -5,8 +5,8 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from datetime import date, datetime
-from io import BytesIO, StringIO
 import hashlib
+from io import BytesIO, StringIO
 import math
 import os
 from pathlib import Path
@@ -22,6 +22,7 @@ from ..domain.errors import DataError, DependencyError, SchemaError
 from ..domain.results import Artifact
 from ..storage.artifacts import ArtifactStore
 from ..storage.sqlite import SQLiteCatalog
+from .limits import enforce_source_size
 from .schema import DatasetColumn, build_columns, schema_fingerprint, validate_display_names
 
 
@@ -56,6 +57,7 @@ class CSVIngestor:
         if dataset.project_id != project_id:
             raise SchemaError({"reason": "dataset_project_mismatch"})
         raw_bytes, inferred_name = _read_source(source)
+        enforce_source_size(len(raw_bytes), source_format="csv")
         source_name = original_name if original_name is not None else inferred_name
         if not source_name:
             source_name = "upload.csv"
@@ -88,7 +90,10 @@ class CSVIngestor:
         canonical.insert(
             0,
             columns[0].physical_name,
-            [str(uuid5(NAMESPACE_URL, f"autoanalyst:{raw_sha256}:{index}")) for index in range(len(canonical))],
+            [
+                str(uuid5(NAMESPACE_URL, f"autoanalyst:{raw_sha256}:{index}"))
+                for index in range(len(canonical))
+            ],
         )
         canonical.insert(1, columns[1].physical_name, range(len(canonical)))
         canonical = canonical[[column.physical_name for column in columns]]
@@ -133,7 +138,12 @@ class CSVIngestor:
         )
         return IngestionResult(dataset_source, version, raw_artifact, table_artifact, columns)
 
-    def _write_parquet(self, dataframe: pd.DataFrame, project_id: str, import_id: str) -> Artifact:
+    def _write_parquet(
+        self,
+        dataframe: pd.DataFrame,
+        project_id: str,
+        import_id: str,
+    ) -> Artifact:
         try:
             import pyarrow as pa
             import pyarrow.parquet as pq
@@ -184,7 +194,9 @@ def _read_dataframe(raw_bytes: bytes, *, delimiter: str, encoding: str) -> pd.Da
     try:
         return pd.read_csv(BytesIO(raw_bytes), sep=delimiter, encoding=encoding)
     except (pd.errors.ParserError, pd.errors.EmptyDataError, UnicodeDecodeError, LookupError) as exc:
-        raise DataError({"reason": "csv_parse_failed", "exception_type": type(exc).__name__}) from exc
+        raise DataError(
+            {"reason": "csv_parse_failed", "exception_type": type(exc).__name__}
+        ) from exc
 
 
 def _content_fingerprint(
