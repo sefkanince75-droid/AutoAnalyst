@@ -147,6 +147,8 @@ class PreparationService:
     def apply_preview(self, preview_id: str) -> DatasetVersion:
         preview = self.get_preview(preview_id)
         if preview.status is PreviewStatus.APPLIED:
+            if preview.applied_version_id is None:
+                raise SchemaError({"reason": "applied_preview_version_missing"})
             return self.catalog.get_version(preview.applied_version_id)
         base = self.catalog.get_version(preview.base_version_id)
         version = DatasetVersion(
