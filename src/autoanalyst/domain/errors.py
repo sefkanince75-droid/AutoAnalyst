@@ -18,14 +18,14 @@ class ErrorCode(str, Enum):
     UNEXPECTED_EXECUTION = "unexpected_execution"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class AutoAnalystError(Exception):
     code: ErrorCode
     context: FrozenDict = field(default_factory=FrozenDict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "code", ErrorCode(self.code))
-        object.__setattr__(self, "context", freeze_json(self.context))
+        self.code = ErrorCode(self.code)
+        self.context = freeze_json(self.context)
         Exception.__init__(self, self.code.value)
 
 
