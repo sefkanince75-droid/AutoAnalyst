@@ -10,10 +10,8 @@ from pathlib import Path
 
 import psutil
 
-from ..domain.runs import RunStatus
-from ..storage.runs import RunStore
 from .lease import release_worker
-from .protocol import EventKind
+from .worker_protocol import write_failure_manifest
 
 RESOURCE_ERROR_CODE = "resource_error"
 
@@ -33,16 +31,14 @@ def budget_violation(
 
 
 class WorkerBudgetWatchdog:
-    """Terminate a worker that exceeds its immutable run budget.
+    """Terminate a disposable worker without mutating SQLite metadata.
 
-    The worker is a disposable process. Before hard exit we persist FAILED when
-    possible; if SQLite itself is unavailable, startup reconciliation converts a
-    stranded RUNNING row to FAILED on the next application open.
+    On a hard budget breach the worker writes a durable staging manifest first.
+    The app-owned coordinator later reconciles that manifest into catalog state.
     """
 
     def __init__(
         self,
-        store: RunStore,
         *,
         workspace: str | Path,
         run_id: str,
@@ -51,7 +47,6 @@ class WorkerBudgetWatchdog:
         poll_seconds: float = 0.2,
         hard_exit: Callable[[int], None] = os._exit,
     ) -> None:
-        self.store = store
         self.workspace = Path(workspace).resolve()
         self.run_id = run_id
         self.max_duration_seconds = float(max_duration_seconds)
@@ -92,34 +87,19 @@ class WorkerBudgetWatchdog:
             )
             if reason is None:
                 continue
-            self._persist_failure(reason, rss)
-            release_worker(self.workspace, self.run_id, pid=os.getpid())
-            self.hard_exit(3)
-            return
-
-    def _persist_failure(self, reason: str, rss_bytes: int) -> None:
-        try:
-            current = self.store.get_run(self.run_id)
-            if current.status not in {RunStatus.PENDING, RunStatus.RUNNING}:
-                return
-            self.store.transition(
-                self.run_id,
-                status=RunStatus.FAILED,
-                error_code=RESOURCE_ERROR_CODE,
-            )
-            self.store.append_event(
-                self.run_id,
-                EventKind.FAILED.value,
-                stage="watchdog",
-                payload={
-                    "error_code": RESOURCE_ERROR_CODE,
-                    "reason": reason,
-                    "rss_bytes": rss_bytes,
-                    "max_memory_bytes": self.max_memory_bytes,
-                    "max_duration_seconds": self.max_duration_seconds,
-                },
-            )
-        except Exception:
-            # The process must still stop. Startup reconciliation will repair a
-            # stranded RUNNING row if persistence failed during the incident.
+            try:
+                write_failure_manifest(
+                    self.workspace,
+                    self.run_id,
+                    error_code=RESOURCE_ERROR_CODE,
+                    context={
+                        "reason": reason,
+                        "rss_bytes": rss,
+                        "max_memory_bytes": self.max_memory_bytes,
+                        "max_duration_seconds": self.max_duration_seconds,
+                    },
+                )
+            finally:
+                release_worker(self.workspace, self.run_id, pid=os.getpid())
+                self.hard_exit(3)
             return
