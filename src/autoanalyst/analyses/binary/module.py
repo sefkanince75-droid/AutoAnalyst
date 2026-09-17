@@ -17,7 +17,7 @@ from sklearn.exceptions import ConvergenceWarning
 
 from ...data.schema import INTERNAL_ROW_ID
 from ...data.table_access import TableAccess
-from ...domain.codec import canonical_json, encode_typed_label, fingerprint
+from ...domain.codec import canonical_json, encode_typed_label
 from ...domain.datasets import ColumnUsage, SemanticType
 from ...domain.errors import DataError, MethodNotApplicableError, SchemaError
 from ...domain.plans import AnalysisModuleId, AnalysisSpec, LearningScope
@@ -31,6 +31,7 @@ from ...domain.results import (
     ResultTable,
 )
 from ...storage.artifacts import ArtifactStore
+from ...storage.binary import BinaryStore, holdout_selection_hash
 from ...storage.runs import RunStore
 from ...storage.sqlite import SQLiteCatalog
 from ..contract import (
@@ -59,6 +60,7 @@ class BinaryClassificationModule:
         self.artifact_store = artifact_store
         self.table_access = TableAccess(catalog, artifact_store)
         self.run_store = RunStore(catalog)
+        self.binary_store = BinaryStore(catalog)
 
     def describe(self) -> AnalysisDescription:
         return AnalysisDescription(
@@ -155,10 +157,11 @@ class BinaryClassificationModule:
                 {"reason": "binary.unsupported_feature_type", "column_ids": tuple(unsupported)}
             )
 
+        column_metadata = {
+            str(row["column_id"]): row for row in self.catalog.list_columns(spec.input_version_id)
+        }
         system_row = next(
-            row
-            for row in self.catalog.list_columns(spec.input_version_id)
-            if row["physical_name"] == INTERNAL_ROW_ID
+            row for row in column_metadata.values() if row["physical_name"] == INTERNAL_ROW_ID
         )
         load_ids = [str(system_row["column_id"]), target_id, *feature_ids]
         split_policy = str(spec.parameters.get("split_policy", "stratified"))
@@ -352,6 +355,10 @@ class BinaryClassificationModule:
             "feature_semantic_types": {
                 role.column_id: role.semantic_type.value for role in feature_roles
             },
+            "feature_physical_families": {
+                feature_id: _physical_family(str(column_metadata[feature_id]["physical_type"]))
+                for feature_id in feature_ids
+            },
             "split_policy": split_policy,
             "split_artifact": _artifact_payload(split_artifact),
             "recommended_model": recommendation,
@@ -395,14 +402,15 @@ class BinaryClassificationModule:
         split_meta = provenance.get("split_artifact")
         if not recommendation or not model_meta or not split_meta:
             raise MethodNotApplicableError({"reason": "binary.no_model_to_finalize"})
-        selection_hash = fingerprint(
-            {
-                "training_run_id": training_run_id,
-                "model_sha": model_meta["sha256"],
-                "split_sha": split_meta["sha256"],
-                "threshold": recommendation["threshold"],
-            }
-        )
+        selection_hash = holdout_selection_hash(training_run_id, provenance)
+        lock = self.binary_store.get_holdout_lock(training_run_id)
+        if (
+            lock is None
+            or lock["final_run_id"] != context.run_id
+            or lock["selection_hash"] != selection_hash
+            or lock["status"] != "access_started"
+        ):
+            raise SchemaError({"reason": "binary.final_holdout_not_locked"})
         # The coordinator persists ACCESS_STARTED before module.run. The module
         # only reads the already-locked test membership and performs computation.
         context.raise_if_cancelled()
@@ -469,14 +477,64 @@ class BinaryClassificationModule:
         model_meta = provenance.get("model_artifact")
         if not recommendation or not model_meta:
             raise MethodNotApplicableError({"reason": "binary.no_model_to_score"})
-        mapping = dict(spec.parameters.get("feature_mapping", {}))
+
+        lock = self.binary_store.get_holdout_lock(training_run_id)
+        if lock is None or lock["status"] != "reported":
+            raise MethodNotApplicableError({"reason": "binary.model_not_finalized"})
+        final_run_id = str(lock["final_run_id"])
+        if self.run_store.result_for_run(final_run_id) is None:
+            raise DataError({"reason": "binary.finalization_result_missing"})
+        expected_selection = holdout_selection_hash(training_run_id, provenance)
+        if lock["selection_hash"] != expected_selection:
+            raise DataError({"reason": "binary.finalized_selection_mismatch"})
+
         training_features = tuple(str(x) for x in provenance["feature_column_ids"])
-        scoring_ids = tuple(str(mapping.get(feature, feature)) for feature in training_features)
+        mapping = {str(key): str(value) for key, value in dict(spec.parameters.get("feature_mapping", {})).items()}
+        expected_keys = set(training_features)
+        actual_keys = set(mapping)
+        if actual_keys != expected_keys:
+            raise SchemaError(
+                {
+                    "reason": "binary.scoring_feature_mapping_incomplete",
+                    "missing": tuple(sorted(expected_keys - actual_keys)),
+                    "extra": tuple(sorted(actual_keys - expected_keys)),
+                }
+            )
+        scoring_ids = tuple(mapping[feature] for feature in training_features)
         if len(set(scoring_ids)) != len(scoring_ids):
             raise SchemaError({"reason": "binary.scoring_feature_mapping_not_one_to_one"})
+
+        expected_families = {
+            str(key): str(value)
+            for key, value in dict(provenance.get("feature_physical_families", {})).items()
+        }
+        if set(expected_families) != expected_keys:
+            raise DataError({"reason": "binary.training_feature_contract_missing"})
+        scoring_metadata = {
+            str(row["column_id"]): row for row in self.catalog.list_columns(spec.input_version_id)
+        }
+        for training_feature, scoring_id in zip(training_features, scoring_ids, strict=True):
+            scoring_column = scoring_metadata.get(scoring_id)
+            if scoring_column is None:
+                raise SchemaError(
+                    {"reason": "binary.column_missing", "column_ids": (scoring_id,)}
+                )
+            actual_family = _physical_family(str(scoring_column["physical_type"]))
+            expected_family = expected_families[training_feature]
+            if actual_family != expected_family:
+                raise MethodNotApplicableError(
+                    {
+                        "reason": "binary.scoring_schema_mismatch",
+                        "training_feature_id": training_feature,
+                        "scoring_column_id": scoring_id,
+                        "expected_family": expected_family,
+                        "actual_family": actual_family,
+                    }
+                )
+
         system_row = next(
             row
-            for row in self.catalog.list_columns(spec.input_version_id)
+            for row in scoring_metadata.values()
             if row["physical_name"] == INTERNAL_ROW_ID
         )
         row_id_col = str(system_row["column_id"])
@@ -525,8 +583,10 @@ class BinaryClassificationModule:
             sample_summary={"rows_scored": len(frame)},
             provenance={
                 "training_run_id": training_run_id,
+                "final_run_id": final_run_id,
                 "model_id": recommendation["model_id"],
                 "threshold": threshold,
+                "feature_mapping": mapping,
             },
         )
 
@@ -662,6 +722,28 @@ def _decode_label(payload):
     if kind == "null":
         return None
     return value
+
+
+def _physical_family(physical_type: str) -> str:
+    lowered = physical_type.strip().lower()
+    if "bool" in lowered:
+        return "boolean"
+    if any(token in lowered for token in ("datetime", "timestamp", "date")):
+        return "datetime"
+    if any(
+        token in lowered
+        for token in (
+            "int",
+            "uint",
+            "float",
+            "double",
+            "decimal",
+            "numeric",
+            "number",
+        )
+    ):
+        return "numeric"
+    return "categorical"
 
 
 def _recommend(items: list[dict[str, object]]) -> dict[str, object] | None:
