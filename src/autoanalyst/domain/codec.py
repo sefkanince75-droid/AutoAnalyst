@@ -18,6 +18,8 @@ class FrozenDict(Mapping[str, Any]):
     """Small immutable mapping used for JSON-shaped domain parameters."""
 
     __slots__ = ("_items", "_lookup")
+    _items: tuple[tuple[str, Any], ...]
+    _lookup: dict[str, Any]
 
     def __init__(self, value: Mapping[str, Any] | tuple[tuple[str, Any], ...] = ()) -> None:
         items = value.items() if isinstance(value, Mapping) else value
