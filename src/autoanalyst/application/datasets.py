@@ -21,6 +21,12 @@ class DatasetService:
     def get(self, dataset_id: str) -> Dataset:
         return self.catalog.get_dataset(dataset_id)
 
+    def list(self, project_id: str) -> tuple[Dataset, ...]:
+        self.catalog.get_project(project_id)
+        with self.catalog.connection() as connection:
+            ids = [row[0] for row in connection.execute("SELECT dataset_id FROM datasets WHERE project_id = ? ORDER BY name, dataset_id", (project_id,))]
+        return tuple(self.get(dataset_id) for dataset_id in ids)
+
     def get_version(self, version_id: str) -> DatasetVersion:
         return self.catalog.get_version(version_id)
 
