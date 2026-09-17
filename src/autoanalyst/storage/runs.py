@@ -206,8 +206,14 @@ class RunStore:
         )
 
     def publish_result(
-        self, run_id: str, result: AnalysisResult, *, now: datetime | None = None
+        self,
+        run_id: str,
+        result: AnalysisResult,
+        *,
+        holdout_training_run_id: str | None = None,
+        now: datetime | None = None,
     ) -> AnalysisRun:
+        """Atomically publish an analysis result and any final-holdout reported state."""
         current = self.get_run(run_id)
         if current.status is not RunStatus.RUNNING:
             raise SchemaError({"reason": "run_not_running", "run_id": run_id})
@@ -222,6 +228,34 @@ class RunStore:
             error_code=None,
         )
         with self.catalog.transaction() as connection:
+            if holdout_training_run_id is not None:
+                lock = connection.execute(
+                    "SELECT * FROM holdout_locks WHERE training_run_id = ?",
+                    (holdout_training_run_id,),
+                ).fetchone()
+                if lock is None:
+                    raise SchemaError(
+                        {
+                            "reason": "holdout_lock_missing",
+                            "training_run_id": holdout_training_run_id,
+                        }
+                    )
+                if lock["final_run_id"] != run_id:
+                    raise SchemaError(
+                        {
+                            "reason": "holdout_final_run_mismatch",
+                            "training_run_id": holdout_training_run_id,
+                        }
+                    )
+                if lock["status"] != "access_started":
+                    raise SchemaError(
+                        {
+                            "reason": "holdout_status_conflict",
+                            "training_run_id": holdout_training_run_id,
+                            "status": lock["status"],
+                        }
+                    )
+
             connection.execute(
                 """INSERT INTO analysis_results
                    (result_id, run_id, module_id, outcome, payload_json, created_at)
@@ -250,6 +284,21 @@ class RunStore:
             )
             if cursor.rowcount != 1:
                 raise SchemaError({"reason": "run_transition_conflict", "run_id": run_id})
+
+            if holdout_training_run_id is not None:
+                lock_cursor = connection.execute(
+                    """UPDATE holdout_locks
+                       SET status = 'reported'
+                       WHERE training_run_id = ? AND final_run_id = ? AND status = 'access_started'""",
+                    (holdout_training_run_id, run_id),
+                )
+                if lock_cursor.rowcount != 1:
+                    raise SchemaError(
+                        {
+                            "reason": "holdout_status_conflict",
+                            "training_run_id": holdout_training_run_id,
+                        }
+                    )
         return completed
 
     def get_result(self, result_id: str) -> AnalysisResult:
