@@ -257,6 +257,7 @@ def test_scoring_rejects_incompatible_physical_type(tmp_path):
         module_version="2.0",
         operation="score_new_data",
         input_version_id=scoring_import.version.version_id,
+        column_roles=(),
         parameters={"training_run_id": training_run.run_id, "feature_mapping": mapping},
         seed=42,
         resource_budget=ResourceBudget(2_000_000_000, 2_000_000_000, 120, 1),
