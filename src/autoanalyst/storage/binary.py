@@ -2,14 +2,56 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from uuid import uuid4
 
-from ..domain.codec import utc_now
+from ..domain.codec import fingerprint, utc_now
 from ..domain.errors import SchemaError
 from .sqlite import SQLiteCatalog
 
 _RETRYABLE_FINAL_STATES = {"failed", "cancelled"}
 _ACTIVE_FINAL_STATES = {"pending", "running"}
+
+
+def holdout_selection_hash(training_run_id: str, provenance: Mapping[str, object]) -> str:
+    """Fingerprint every decision that must be frozen before final-test access."""
+    recommendation = provenance.get("recommended_model")
+    model_meta = provenance.get("model_artifact")
+    split_meta = provenance.get("split_artifact")
+    if not isinstance(recommendation, Mapping) or not isinstance(model_meta, Mapping) or not isinstance(
+        split_meta, Mapping
+    ):
+        raise SchemaError({"reason": "holdout_selection_metadata_missing", "training_run_id": training_run_id})
+    required_recommendation = {"model_id", "threshold"}
+    if not required_recommendation.issubset(recommendation):
+        raise SchemaError({"reason": "holdout_recommendation_incomplete", "training_run_id": training_run_id})
+    for metadata, kind in ((model_meta, "model"), (split_meta, "split")):
+        if "sha256" not in metadata:
+            raise SchemaError(
+                {
+                    "reason": "holdout_artifact_checksum_missing",
+                    "training_run_id": training_run_id,
+                    "artifact_kind": kind,
+                }
+            )
+    return fingerprint(
+        {
+            "training_run_id": training_run_id,
+            "training_spec_hash": provenance.get("spec_hash"),
+            "input_version_id": provenance.get("input_version_id"),
+            "target_column_id": provenance.get("target_column_id"),
+            "positive_label": provenance.get("positive_label"),
+            "negative_label": provenance.get("negative_label"),
+            "feature_column_ids": provenance.get("feature_column_ids"),
+            "feature_semantic_types": provenance.get("feature_semantic_types"),
+            "feature_physical_families": provenance.get("feature_physical_families"),
+            "split_policy": provenance.get("split_policy"),
+            "model_id": recommendation["model_id"],
+            "threshold": recommendation["threshold"],
+            "model_sha256": model_meta["sha256"],
+            "split_sha256": split_meta["sha256"],
+        }
+    )
 
 
 class BinaryStore:
@@ -94,6 +136,7 @@ class BinaryStore:
             }
 
     def mark_reported(self, training_run_id: str, final_run_id: str) -> None:
+        """Legacy helper for explicit callers; coordinator publication is atomic in RunStore."""
         with self.catalog.transaction() as connection:
             row = connection.execute(
                 "SELECT * FROM holdout_locks WHERE training_run_id = ?", (training_run_id,)
