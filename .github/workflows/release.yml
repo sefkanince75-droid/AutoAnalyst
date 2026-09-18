@@ -3,6 +3,8 @@ name: V2 Release Candidate
 on:
   workflow_dispatch:
   push:
+    branches:
+      - v2-completion
     tags:
       - "v2.*"
 
