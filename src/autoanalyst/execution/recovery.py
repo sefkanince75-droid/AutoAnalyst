@@ -142,11 +142,7 @@ def _publish_success(store: RunStore, workspace: Path, run_id: str, manifest) ->
                 "SELECT * FROM holdout_locks WHERE training_run_id = ?",
                 (holdout_training_run_id,),
             ).fetchone()
-            if (
-                lock is None
-                or lock["final_run_id"] != run_id
-                or lock["status"] != "access_started"
-            ):
+            if lock is None or lock["final_run_id"] != run_id or lock["status"] != "access_started":
                 raise RuntimeError("final holdout lock is not publishable")
         connection.execute(
             """INSERT INTO analysis_results

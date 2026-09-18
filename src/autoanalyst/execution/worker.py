@@ -73,7 +73,10 @@ def run_worker(workspace: str | Path, run_id: str) -> int:
                 workspace_path,
                 run_id,
                 error_code="schema_error",
-                context={"reason": "analysis_spec_validation_failed", "codes": tuple(i.code for i in issues)},
+                context={
+                    "reason": "analysis_spec_validation_failed",
+                    "codes": tuple(i.code for i in issues),
+                },
             )
             return 2
         module.check_applicability(spec).require_runnable()
@@ -91,7 +94,11 @@ def run_worker(workspace: str | Path, run_id: str) -> int:
 
     def progress(stage: str, fraction: float, payload) -> None:
         now = time.monotonic()
-        if stage != last_progress["stage"] or fraction >= 1.0 or now - float(last_progress["when"]) >= 0.2:
+        if (
+            stage != last_progress["stage"]
+            or fraction >= 1.0
+            or now - float(last_progress["when"]) >= 0.2
+        ):
             write_progress_manifest(
                 workspace_path,
                 run_id,

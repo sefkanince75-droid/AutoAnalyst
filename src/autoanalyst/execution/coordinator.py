@@ -49,7 +49,9 @@ class ExecutionCoordinator:
         environment: dict[str, object] | None = None,
     ) -> AnalysisRun:
         persisted_spec = self.store.insert_spec(spec)
-        environment_manifest = environment if environment is not None else runtime_environment_manifest()
+        environment_manifest = (
+            environment if environment is not None else runtime_environment_manifest()
+        )
         input_version = self.store.catalog.get_version(persisted_spec.input_version_id)
         input_fingerprint = fingerprint(
             {
