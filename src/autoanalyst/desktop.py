@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -31,10 +32,35 @@ def main(argv: list[str] | None = None) -> int:
         print(__version__)
         return 0
     if parsed.self_test:
+        from autoanalyst.ui.app import main as ui_main
+
+        if not callable(ui_main):
+            raise RuntimeError("Bundled V2 UI entry point is unavailable")
+        _bundled_file("app.py")
+        worker_probe = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "autoanalyst.execution.worker",
+                "--help",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if worker_probe.returncode != 0:
+            raise RuntimeError(
+                "Bundled worker dispatcher failed self-test: "
+                + worker_probe.stderr[-1000:]
+            )
+
         with tempfile.TemporaryDirectory(prefix="autoanalyst-selftest-") as root:
             runtime = build_runtime(Path(root))
-            assert runtime.catalog.paths.catalog.is_file()
-            assert runtime.registry.module_ids
+            if not runtime.catalog.paths.catalog.is_file():
+                raise RuntimeError("Self-test workspace catalog was not created")
+            if not runtime.registry.module_ids:
+                raise RuntimeError("Self-test analysis registry is empty")
         print(f"AutoAnalyst {__version__} self-test OK")
         return 0
 
