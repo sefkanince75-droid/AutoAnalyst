@@ -51,8 +51,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if worker_probe.returncode != 0:
             raise RuntimeError(
-                "Bundled worker dispatcher failed self-test: "
-                + worker_probe.stderr[-1000:]
+                "Bundled worker dispatcher failed self-test: " + worker_probe.stderr[-1000:]
             )
 
         with tempfile.TemporaryDirectory(prefix="autoanalyst-selftest-") as root:
