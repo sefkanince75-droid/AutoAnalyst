@@ -243,9 +243,7 @@ def test_preparation_module_reports_project_and_base_mismatch(phase3_workspace) 
         recipe_id=recipe.recipe_id,
     )
     report = module.check_applicability(wrong_project)
-    assert "preparation.project_mismatch" in {
-        issue.code for issue in report.blocking_issues
-    }
+    assert "preparation.project_mismatch" in {issue.code for issue in report.blocking_issues}
 
     newer = CSVIngestor(workspace.catalog, workspace.store).import_csv(
         project_id=workspace.project.project_id,
@@ -259,15 +257,11 @@ def test_preparation_module_reports_project_and_base_mismatch(phase3_workspace) 
         recipe_id=recipe.recipe_id,
     )
     report = module.check_applicability(wrong_base)
-    assert "preparation.base_version_mismatch" in {
-        issue.code for issue in report.blocking_issues
-    }
+    assert "preparation.base_version_mismatch" in {issue.code for issue in report.blocking_issues}
 
     stale_base = _analysis_spec(workspace, recipe_id=recipe.recipe_id)
     report = module.check_applicability(stale_base)
-    assert "preparation.base_not_current_head" in {
-        issue.code for issue in report.blocking_issues
-    }
+    assert "preparation.base_not_current_head" in {issue.code for issue in report.blocking_issues}
 
 
 def test_preparation_module_blocks_train_only_recipe(phase3_workspace) -> None:
