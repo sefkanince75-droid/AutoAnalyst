@@ -161,7 +161,9 @@ def test_holdout_retry_reuses_exact_selection_after_retryable_terminal_state(
     binary = BinaryStore(workspace.catalog)
     training = _new_run(workspace, coordinator, f"holdout-training-retry-{terminal_status.value}")
     first_final = _new_run(workspace, coordinator, f"holdout-final-retry-1-{terminal_status.value}")
-    second_final = _new_run(workspace, coordinator, f"holdout-final-retry-2-{terminal_status.value}")
+    second_final = _new_run(
+        workspace, coordinator, f"holdout-final-retry-2-{terminal_status.value}"
+    )
     selection_hash = "f" * 64
 
     binary.start_holdout_access(training.run_id, first_final.run_id, selection_hash)
