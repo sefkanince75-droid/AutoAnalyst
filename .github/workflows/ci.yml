@@ -79,3 +79,5 @@ jobs:
         run: uv run python -m build
       - name: Verify package import
         run: uv run python -c "import autoanalyst; print(autoanalyst.__version__)"
+      - name: Desktop self-test
+        run: uv run python -m autoanalyst.desktop --self-test
