@@ -53,9 +53,28 @@ jobs:
       - name: Run tests
         if: runner.os == 'Windows'
         run: uv run pytest -q
-      - name: Run tests with branch coverage
+      - name: Backend branch coverage gate
         if: runner.os == 'Linux'
-        run: uv run pytest -q --cov=autoanalyst --cov-branch --cov-report=term-missing --cov-fail-under=0
+        run: >-
+          uv run pytest -q
+          --cov=autoanalyst
+          --cov-config=.coveragerc
+          --cov-branch
+          --cov-report=term-missing
+          --cov-fail-under=80
+      - name: Critical domain preparation holdout coverage gate
+        if: runner.os == 'Linux'
+        run: >-
+          uv run pytest -q tests/v2
+          --cov=autoanalyst.domain
+          --cov=autoanalyst.preparation
+          --cov=autoanalyst.application.preparation
+          --cov=autoanalyst.analyses.preparation
+          --cov=autoanalyst.storage.binary
+          --cov-config=.coveragerc
+          --cov-branch
+          --cov-report=term-missing
+          --cov-fail-under=90
       - name: Build wheel and sdist
         run: uv run python -m build
       - name: Verify package import
