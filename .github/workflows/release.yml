@@ -42,6 +42,7 @@ jobs:
           --add-data "src/autoanalyst/storage/migrations;autoanalyst/storage/migrations"
           --collect-all streamlit
           --collect-data autoanalyst
+          --collect-submodules autoanalyst.ui
           --hidden-import autoanalyst.execution.worker
           src/autoanalyst/desktop.py
       - name: Offline executable smoke test
