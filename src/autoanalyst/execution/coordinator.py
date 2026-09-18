@@ -320,6 +320,11 @@ class ExecutionCoordinator:
         path.write_text("cancel\n", encoding="utf-8")
         self.store.append_event(run_id, "cancel_requested", stage="run")
 
+        if run.status is RunStatus.PENDING:
+            self._finish_cancel_if_active(run_id)
+            release_worker(workspace_path, run_id)
+            return
+
         process = owned_process(workspace_path, run_id)
         if process is None:
             reconcile_worker_run(self.store, workspace_path, run_id)
