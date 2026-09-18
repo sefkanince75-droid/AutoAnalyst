@@ -21,7 +21,8 @@ def main(argv: list[str] | None = None) -> int:
     if args[:2] == ["-m", "autoanalyst.execution.worker"]:
         from autoanalyst.execution.worker import main as worker_main
 
-        return worker_main(args[2:])
+        sys.argv = ["autoanalyst-worker", *args[2:]]
+        return worker_main()
 
     parser = argparse.ArgumentParser(prog="AutoAnalyst")
     parser.add_argument("--version", action="store_true")
