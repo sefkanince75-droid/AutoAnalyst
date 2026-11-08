@@ -11,7 +11,7 @@ import traceback
 from pathlib import Path
 from urllib.request import ProxyHandler, build_opener
 
-from autoanalyst import __version__
+from . import __version__
 
 
 def server_command(port: int) -> list[str]:
@@ -93,6 +93,8 @@ def show_window(url: str, *, check: bool = False) -> None:
     window = webview.create_window(
         f"AutoAnalyst V2 · {__version__}", url, width=1280, height=850, min_size=(900, 600)
     )
+    if window is None:
+        raise RuntimeError("Native desktop window could not be created")
     result = {"loaded": False}
 
     def verify():
@@ -123,8 +125,8 @@ def show_window(url: str, *, check: bool = False) -> None:
 
 
 def launch(port: int, *, check: bool = False) -> int:
-    from autoanalyst.desktop import _select_loopback_port
-    from autoanalyst.storage.sqlite import SQLiteCatalog, WorkspacePaths
+    from .desktop import _select_loopback_port
+    from .storage.sqlite import SQLiteCatalog, WorkspacePaths
 
     if not check:
         hide_owned_console()

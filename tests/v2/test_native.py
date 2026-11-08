@@ -96,3 +96,9 @@ def test_cleanup_does_not_terminate_analysis_workers(monkeypatch):
 def test_readiness_detects_server_crash_without_opening_window():
     with pytest.raises(RuntimeError, match="exited"):
         native.wait_for_ui(SimpleNamespace(poll=lambda: 1), "http://127.0.0.1:1", timeout=1)
+
+
+def test_missing_native_window_returns_an_actionable_failure(monkeypatch):
+    monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(create_window=lambda *a, **k: None))
+    with pytest.raises(RuntimeError, match="could not be created"):
+        native.show_window("http://127.0.0.1:1234")
