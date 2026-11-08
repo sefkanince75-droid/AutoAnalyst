@@ -14,8 +14,8 @@ from autoanalyst.storage.binary import BinaryStore, holdout_selection_hash
 from autoanalyst.storage.runs import RunStore
 
 
-def _profiling_spec(workspace) -> AnalysisSpec:
-    version_id = workspace.imported.version.version_id
+def _profiling_spec(workspace, version_id: str | None = None) -> AnalysisSpec:
+    version_id = version_id or workspace.imported.version.version_id
     payload = {"module": "profiling", "operation": "profile", "version": version_id}
     return AnalysisSpec(
         spec_id=str(uuid4()),
@@ -33,8 +33,8 @@ def _profiling_spec(workspace) -> AnalysisSpec:
     )
 
 
-def _new_run(workspace, coordinator: ExecutionCoordinator, key: str):
-    return coordinator.create_run(_profiling_spec(workspace), request_key=key)
+def _new_run(workspace, coordinator: ExecutionCoordinator, key: str, version_id: str | None = None):
+    return coordinator.create_run(_profiling_spec(workspace, version_id), request_key=key)
 
 
 def _selection_provenance() -> dict[str, object]:
@@ -148,6 +148,58 @@ def test_holdout_rejects_second_active_final_run(phase3_workspace) -> None:
         binary.start_holdout_access(training.run_id, second_final.run_id, "e" * 64)
     assert exc_info.value.context["reason"] == "holdout_final_already_active"
     assert exc_info.value.context["final_run_id"] == first_final.run_id
+
+
+def test_holdout_exposure_survives_retraining_on_same_source(phase3_workspace) -> None:
+    workspace = phase3_workspace
+    coordinator = ExecutionCoordinator(RunStore(workspace.catalog))
+    binary = BinaryStore(workspace.catalog)
+    training_a = _new_run(workspace, coordinator, "holdout-source-training-a")
+    final_a = _new_run(workspace, coordinator, "holdout-source-final-a")
+    training_b = _new_run(workspace, coordinator, "holdout-source-training-b")
+    final_b = _new_run(workspace, coordinator, "holdout-source-final-b")
+
+    binary.start_holdout_access(training_a.run_id, final_a.run_id, "a" * 64)
+    binary.mark_reported(training_a.run_id, final_a.run_id)
+
+    with pytest.raises(SchemaError) as exposed:
+        binary.start_holdout_access(training_b.run_id, final_b.run_id, "b" * 64)
+    assert exposed.value.context["reason"] == "holdout_source_already_exposed"
+    assert exposed.value.context["previous_training_run_id"] == training_a.run_id
+
+
+def test_holdout_exposure_protects_preparation_descendants(phase3_workspace) -> None:
+    workspace = phase3_workspace
+    base_id = workspace.imported.version.version_id
+    group = workspace.column("group")
+    recipe = workspace.preparation.create_recipe(
+        project_id=workspace.project.project_id,
+        base_version_id=base_id,
+        steps=[
+            {
+                "operation": "remove_duplicates",
+                "parameters": {"column_ids": [group["column_id"]], "keep": "first"},
+            }
+        ],
+    )
+    prepared = workspace.preparation.apply_preview(
+        workspace.preparation.preview_recipe(recipe.recipe_id).preview_id
+    )
+    coordinator = ExecutionCoordinator(RunStore(workspace.catalog))
+    binary = BinaryStore(workspace.catalog)
+    training_a = _new_run(workspace, coordinator, "holdout-descendant-training-a", base_id)
+    final_a = _new_run(workspace, coordinator, "holdout-descendant-final-a", base_id)
+    training_b = _new_run(
+        workspace, coordinator, "holdout-descendant-training-b", prepared.version_id
+    )
+    final_b = _new_run(workspace, coordinator, "holdout-descendant-final-b", prepared.version_id)
+
+    binary.start_holdout_access(training_a.run_id, final_a.run_id, "c" * 64)
+    binary.mark_reported(training_a.run_id, final_a.run_id)
+
+    with pytest.raises(SchemaError) as exposed:
+        binary.start_holdout_access(training_b.run_id, final_b.run_id, "d" * 64)
+    assert exposed.value.context["reason"] == "holdout_source_already_exposed"
 
 
 @pytest.mark.parametrize("terminal_status", (RunStatus.FAILED, RunStatus.CANCELLED))

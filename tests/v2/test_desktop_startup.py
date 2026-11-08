@@ -31,7 +31,7 @@ def test_launcher_loads_production_config_before_bootstrap(monkeypatch, capsys):
     monkeypatch.setattr(bootstrap, "load_config_options", load)
     monkeypatch.setattr(bootstrap, "run", run)
     monkeypatch.setattr(server_util, "get_url", lambda address: f"http://{address}:43210")
-    assert desktop.main(["--port", "0"]) == 0
+    assert desktop.main(["--browser", "--port", "0"]) == 0
     assert calls == ["load", "run"]
     assert "AutoAnalyst URL: http://127.0.0.1:43210" in capsys.readouterr().out
 

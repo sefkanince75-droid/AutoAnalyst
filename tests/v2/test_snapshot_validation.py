@@ -272,7 +272,7 @@ def test_known_older_catalog_is_migrated_before_publication(tmp_path):
     )
     restored = WorkspaceSnapshotService.import_snapshot(source, tmp_path / "restore", trusted=True)
     current = SQLiteCatalog(restored)
-    assert len(current.migration_records()) == 6
+    assert len(current.migration_records()) == 8
     assert current.get_project(project.project_id).name == "Older schema"
 
 

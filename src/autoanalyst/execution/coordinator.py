@@ -282,6 +282,8 @@ class ExecutionCoordinator:
                 run_id,
             ]
             env = os.environ.copy()
+            if getattr(sys, "frozen", False):
+                env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
             src_root = str(Path(__file__).resolve().parents[2])
             env["PYTHONPATH"] = src_root + (
                 os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""

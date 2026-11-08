@@ -162,4 +162,8 @@ The previous localized seven-stage V1.1 application is preserved in `legacy_app.
 
 The V2 launcher explicitly loads production Streamlit configuration before starting the server. It binds to 127.0.0.1 and uses the same resolved port for the server and browser URL. Port 8501 is preferred; an occupied port falls back to a free loopback port. `AutoAnalyst.exe --port 0` selects a free port, and `--no-browser` starts only the local server.
 
+On Windows, double-clicking opens a standalone WebView2 desktop window, without a Chrome tab or address bar. The WebView2 runtime is required. `--browser` explicitly selects the external browser for diagnostics; `--native-check --port 0` verifies the actual rendered native window and exits. Closing the window stops its own UI server; analysis workers keep their independent lifecycle.
+
+Known historical workspaces with migrations 6=artifact quarantine and 7=holdout source locks are upgraded transactionally to the canonical 6=join, 7=quarantine, 8=source locks layout. Exact trusted checksums and schema objects must match; unknown histories remain rejected. Existing data and security records are preserved. Back up existing workspaces before upgrading.
+
 `--self-test` verifies backend workflows; it is not proof that a browser can load the UI. The development-only `tools/check_startup.py --executable dist/AutoAnalyst.exe` additionally verifies real HTTP HTML/JS/CSS, the UI websocket and a rendered synthetic example project using an isolated temporary workspace. CI runs both checks. Playwright is a development dependency and is not required by users of the Windows executable.

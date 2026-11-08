@@ -25,6 +25,7 @@ from ..domain.results import AnalysisResult
 from ..domain.runs import AnalysisRun
 from ..execution.lease import clear_stale_lease, owned_process
 from ..storage.artifacts import ArtifactStore
+from ..storage.schema_compat import migration_layout
 from ..storage.sqlite import SQLiteCatalog, _sql_statements
 
 SNAPSHOT_FORMAT = "autoanalyst.workspace_snapshot"
@@ -274,7 +275,14 @@ def _validate_catalog(path: Path) -> None:
             or len(rows) > len(migrations)
         ):
             raise SchemaError({"reason": "snapshot_catalog_incompatible"})
-        for row, migration in zip(rows, migrations, strict=False):
+        try:
+            layout, _ = migration_layout(
+                {row["version"]: row["checksum"] for row in rows}, migrations
+            )
+        except SchemaError as exc:
+            raise SchemaError({"reason": "snapshot_catalog_incompatible"}) from exc
+        for row in rows:
+            migration = layout[row["version"]]
             sql = migration.read_text(encoding="utf-8").replace("\r\n", "\n")
             if row["checksum"] != hashlib.sha256(sql.encode()).hexdigest():
                 raise SchemaError({"reason": "snapshot_catalog_incompatible"})
@@ -285,7 +293,7 @@ def _validate_catalog(path: Path) -> None:
             return {
                 tuple(row)
                 for row in db.execute(
-                    "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+                    "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'"
                 )
             }
 

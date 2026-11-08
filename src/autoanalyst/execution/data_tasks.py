@@ -204,8 +204,12 @@ class DataTaskService:
                     "--job-id",
                     job_id,
                 ]
+                worker_env = os.environ.copy()
+                if getattr(sys, "frozen", False):
+                    worker_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
                 process = subprocess.Popen(
                     command,
+                    env=worker_env,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),

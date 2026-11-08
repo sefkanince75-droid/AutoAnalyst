@@ -58,6 +58,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Real executable HTTP assets websocket and browser validation
         run: uv run --frozen python tools/check_startup.py --executable dist/AutoAnalyst.exe --output build/startup-check.json --screenshot build/startup-ui.png
+      - name: Real native WebView2 desktop window validation
+        # WebView2 verifies a real desktop window, beyond HTTP/backend smoke tests.
+        # Keep the workspace isolated from any developer/user installation.
+        shell: pwsh
+        run: |
+          uv run --frozen python tools/check_native.py --executable dist/AutoAnalyst.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Create portable archive
         shell: pwsh
         run: >-

@@ -688,6 +688,11 @@ class BinaryClassificationModule:
         return self.artifact_store.finalize(staged)
 
     def _load_model(self, metadata):
+        artifact_id = str(metadata.get("artifact_id", ""))
+        if not artifact_id or not self.catalog.artifact_is_deserialization_trusted(artifact_id):
+            raise DataError(
+                {"reason": "binary_model_artifact_untrusted", "artifact_id": artifact_id}
+            )
         path = self._verified_path(metadata)
         return joblib.load(path)
 

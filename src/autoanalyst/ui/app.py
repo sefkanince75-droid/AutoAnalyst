@@ -43,7 +43,16 @@ from .workspace_backups import render_workspace_backups
 
 def main() -> None:
     st.set_page_config(page_title="AutoAnalyst V2", layout="wide")
-    runtime = build_runtime(st.session_state.get("active_workspace"))
+    try:
+        runtime = build_runtime(st.session_state.get("active_workspace"))
+    except SchemaError as exc:
+        language = st.session_state.get("language", "en")
+        st.title(I18N[language]["title"])
+        st.error(
+            "Çalışma alanı bu sürümle uyumlu değil. Verileriniz silinmedi. / This workspace is incompatible; your data has been preserved."
+        )
+        st.caption(str(exc.context.get("reason", "workspace_schema_error")))
+        st.stop()
     projects = ProjectService(runtime.catalog)
     if "language" not in st.session_state:
         available = projects.list()

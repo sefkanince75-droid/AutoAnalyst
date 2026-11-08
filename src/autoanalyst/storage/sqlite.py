@@ -685,6 +685,15 @@ class SQLiteCatalog:
             )
             return tuple(dict(row) for row in rows)
 
+    def artifact_is_deserialization_trusted(self, artifact_id: str) -> bool:
+        with self.connection() as connection:
+            return (
+                connection.execute(
+                    "SELECT 1 FROM artifact_trust WHERE artifact_id=?", (artifact_id,)
+                ).fetchone()
+                is None
+            )
+
     def _apply_migrations(self) -> None:
         migration_files = sorted(self.migrations_dir.glob("[0-9][0-9][0-9][0-9]_*.sql"))
         if not migration_files:
@@ -701,6 +710,14 @@ class SQLiteCatalog:
                 if has_table
                 else {}
             )
+            if has_table:
+                from .schema_compat import bridge_known_history
+
+                bridge_known_history(connection, migration_files)
+                applied = {
+                    row["version"]: row["checksum"]
+                    for row in connection.execute("SELECT version, checksum FROM schema_migrations")
+                }
             for migration_path in migration_files:
                 version = int(migration_path.name.split("_", 1)[0])
                 content = migration_path.read_bytes()

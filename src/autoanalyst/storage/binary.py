@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from collections.abc import Mapping
 from uuid import uuid4
 
@@ -82,6 +84,8 @@ class BinaryStore:
         active run, a completed result, or a different selection is rejected.
         """
         with self.catalog.transaction() as connection:
+            _backfill_source_locks(connection)
+            source_identities = _protected_source_identities(connection, training_run_id)
             existing = connection.execute(
                 "SELECT * FROM holdout_locks WHERE training_run_id = ?", (training_run_id,)
             ).fetchone()
@@ -136,12 +140,33 @@ class BinaryStore:
                 return dict(updated)
 
             lock_id = str(uuid4())
+            placeholders = ",".join("?" for _ in source_identities)
+            exposed = connection.execute(
+                f"""SELECT source_identity, training_run_id
+                    FROM holdout_source_locks
+                    JOIN holdout_locks USING (lock_id)
+                    WHERE source_identity IN ({placeholders})
+                    LIMIT 1""",
+                source_identities,
+            ).fetchone()
+            if exposed is not None:
+                raise SchemaError(
+                    {
+                        "reason": "holdout_source_already_exposed",
+                        "training_run_id": training_run_id,
+                        "previous_training_run_id": str(exposed["training_run_id"]),
+                    }
+                )
             started = utc_now().isoformat().replace("+00:00", "Z")
             connection.execute(
                 """INSERT INTO holdout_locks
                    (lock_id, training_run_id, selection_hash, status, final_run_id, access_started_at)
                    VALUES (?, ?, ?, 'access_started', ?, ?)""",
                 (lock_id, training_run_id, selection_hash, final_run_id, started),
+            )
+            connection.executemany(
+                "INSERT INTO holdout_source_locks (source_identity, lock_id) VALUES (?, ?)",
+                ((source_identity, lock_id) for source_identity in source_identities),
             )
             return {
                 "lock_id": lock_id,
@@ -183,3 +208,66 @@ class BinaryStore:
                 "SELECT * FROM holdout_locks WHERE training_run_id = ?", (training_run_id,)
             ).fetchone()
         return dict(row) if row is not None else None
+
+
+def _backfill_source_locks(connection: sqlite3.Connection) -> None:
+    """Protect locks created before source-identity persistence was introduced."""
+    locks = tuple(
+        connection.execute(
+            "SELECT lock_id, training_run_id FROM holdout_locks ORDER BY access_started_at, lock_id"
+        )
+    )
+    for lock in locks:
+        for source_identity in _protected_source_identities(
+            connection, str(lock["training_run_id"])
+        ):
+            connection.execute(
+                "INSERT OR IGNORE INTO holdout_source_locks (source_identity, lock_id) VALUES (?, ?)",
+                (source_identity, str(lock["lock_id"])),
+            )
+
+
+def _protected_source_identities(
+    connection: sqlite3.Connection, training_run_id: str
+) -> tuple[str, ...]:
+    rows = tuple(
+        connection.execute(
+            """SELECT DISTINCT source.raw_sha256, source.format, imported.parse_contract
+               FROM analysis_runs AS run
+               JOIN analysis_specs AS spec ON spec.spec_id = run.spec_id
+               JOIN version_inputs AS selected ON selected.version_id = spec.input_version_id
+               JOIN dataset_sources AS source ON source.source_id = selected.source_id
+               JOIN version_inputs AS origin ON origin.source_id = source.source_id
+               JOIN dataset_versions AS imported ON imported.version_id = origin.version_id
+               WHERE run.run_id = ? AND imported.kind = 'imported'
+               ORDER BY source.raw_sha256, imported.parse_contract""",
+            (training_run_id,),
+        )
+    )
+    if not rows:
+        raise SchemaError(
+            {"reason": "holdout_source_identity_missing", "training_run_id": training_run_id}
+        )
+    identities: set[str] = set()
+    for row in rows:
+        worksheet = None
+        if str(row["format"]) == "xlsx":
+            try:
+                contract = json.loads(str(row["parse_contract"]))
+                worksheet = contract["sheet_name"]
+            except (KeyError, TypeError, json.JSONDecodeError) as exc:
+                raise SchemaError(
+                    {
+                        "reason": "holdout_source_identity_invalid",
+                        "training_run_id": training_run_id,
+                    }
+                ) from exc
+            if not isinstance(worksheet, str) or not worksheet:
+                raise SchemaError(
+                    {
+                        "reason": "holdout_source_identity_invalid",
+                        "training_run_id": training_run_id,
+                    }
+                )
+        identities.add(fingerprint({"raw_sha256": str(row["raw_sha256"]), "worksheet": worksheet}))
+    return tuple(sorted(identities))

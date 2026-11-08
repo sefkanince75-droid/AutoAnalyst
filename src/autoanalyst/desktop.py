@@ -33,6 +33,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument(
+        "--native-check", action="store_true", help="Verify the rendered desktop window"
+    )
+    parser.add_argument("--browser", action="store_true", help="Open the external browser instead")
+    parser.add_argument("--serve-ui", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
         "--port",
         type=int,
         default=8501,
@@ -62,6 +67,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"AutoAnalyst {__version__} self-test OK")
         return 0
 
+    if parsed.native_check or (
+        sys.platform == "win32" and not (parsed.no_browser or parsed.serve_ui or parsed.browser)
+    ):
+        from autoanalyst.native import launch
+
+        return launch(parsed.port, check=parsed.native_check)
+
     from streamlit.web import bootstrap
     from streamlit.web.server import server_util
 
@@ -76,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         "browser.serverAddress": "127.0.0.1",
         "browser.serverPort": port,
         "server.baseUrlPath": "",
-        "server.headless": parsed.no_browser,
+        "server.headless": parsed.no_browser or parsed.serve_ui,
         "server.fileWatcherType": "none",
         "server.runOnSave": False,
         "server.maxUploadSize": 256,

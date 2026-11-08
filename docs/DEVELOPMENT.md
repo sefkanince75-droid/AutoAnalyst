@@ -239,4 +239,4 @@ uv run --frozen playwright install chromium
 uv run --frozen python tools/check_startup.py --executable dist/AutoAnalyst.exe --output build/startup-check.json --screenshot build/startup-ui.png
 ```
 
-CI Linux'ta browser sistem bağımlılıklarını da `playwright install --with-deps chromium` ile kurar. Bu araç uygulamanın runtime bağımlılığı değildir. Gerçek kurulu EXE ve masaüstü kısayolu testlerin kapsamı dışındadır; değiştirilmez.
+CI Linux'ta browser sistem bağımlılıklarını da `playwright install --with-deps chromium` ile kurar. Bu araç uygulamanın runtime bağımlılığı değildir. Windows paket CI'ı ayrıca `--native-check --port 0` ile gerçek WebView2 penceresinin sidebar ve tamamlanmış UI durumunu denetler. Test çalışma alanı RUNNER_TEMP altında yalıtılır. Kullanıcı kurulumunu güncellerken uygulama ve çalışma alanı ayrı ayrı yedeklenmelidir.
