@@ -8,6 +8,50 @@ MIB = 1024 * 1024
 CSV_MAX_BYTES = 256 * MIB
 XLSX_MAX_BYTES = 64 * MIB
 IMPORT_BATCH_MAX_BYTES = 512 * MIB
+MAX_ROWS = 1_000_000
+MAX_COLUMNS = 500
+MAX_CELLS = 5_000_000
+XLSX_UNPACKED_MAX_BYTES = 256 * MIB
+
+
+def enforce_shape(rows: int, columns: int) -> None:
+    if rows > MAX_ROWS or columns > MAX_COLUMNS or rows * columns > MAX_CELLS:
+        raise ResourceError(
+            {
+                "reason": "data_shape_limit",
+                "rows": rows,
+                "columns": columns,
+                "max_rows": MAX_ROWS,
+                "max_columns": MAX_COLUMNS,
+                "max_cells": MAX_CELLS,
+            }
+        )
+
+
+def enforce_free_disk(root, required: int) -> None:
+    import shutil
+
+    if shutil.disk_usage(root).free < required:
+        raise ResourceError({"reason": "data_disk_space", "required_bytes": required})
+
+
+def enforce_xlsx_archive(raw: bytes) -> None:
+    from io import BytesIO
+    from zipfile import BadZipFile, ZipFile
+
+    from ..domain.errors import DataError
+
+    try:
+        with ZipFile(BytesIO(raw)) as archive:
+            entries = archive.infolist()
+            if (
+                len(entries) > 10_000
+                or sum(e.file_size for e in entries) > XLSX_UNPACKED_MAX_BYTES
+                or any(e.file_size > 128 * MIB for e in entries)
+            ):
+                raise ResourceError({"reason": "xlsx_expansion_limit"})
+    except BadZipFile as exc:
+        raise DataError({"reason": "xlsx_open_failed"}) from exc
 
 
 def enforce_source_size(byte_size: int, *, source_format: str) -> None:

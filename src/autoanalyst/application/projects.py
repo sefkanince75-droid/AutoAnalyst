@@ -29,14 +29,20 @@ class ProjectService:
     def get(self, project_id: str) -> Project:
         return self.catalog.get_project(project_id)
 
-    def list(self) -> tuple[Project, ...]:
-        return self.catalog.list_projects()
+    def list(self, *, include_archived: bool = False) -> tuple[Project, ...]:
+        return tuple(
+            project
+            for project in self.catalog.list_projects()
+            if include_archived or project.archived_at is None
+        )
 
-    def rename(self, project_id: str, name: str) -> Project:
+    def rename(
+        self, project_id: str, name: str, *, expected_revision: int | None = None
+    ) -> Project:
         current = self.get(project_id)
         validated = Project(
             project_id=current.project_id,
-            name=name,
+            name=name.strip(),
             created_at=current.created_at,
             updated_at=utc_now(),
             format_version=current.format_version,
@@ -47,5 +53,18 @@ class ProjectService:
         )
         return cast(
             Project,
-            self.catalog.rename_project(project_id, validated.name, validated.updated_at),
+            self.catalog.rename_project(
+                project_id,
+                validated.name,
+                validated.updated_at,
+                expected_revision=expected_revision,
+            ),
+        )
+
+    def set_archived(self, project_id: str, archived: bool, *, expected_revision: int) -> Project:
+        return cast(
+            Project,
+            self.catalog.set_project_archived(
+                project_id, archived, expected_revision=expected_revision
+            ),
         )

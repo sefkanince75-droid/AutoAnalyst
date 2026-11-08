@@ -2,12 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main, v2-completion]
+    branches: [main, v2-completion, 'codex/**']
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -45,6 +48,9 @@ jobs:
           src/autoanalyst/analyses/contract.py
           src/autoanalyst/application
           src/autoanalyst/execution/protocol.py
+          src/autoanalyst/execution/data_control.py
+          src/autoanalyst/execution/data_tasks.py
+          src/autoanalyst/execution/data_worker.py
       - name: Architecture boundaries
         if: runner.os == 'Linux'
         run: uv run pytest -q tests/v2/test_architecture_boundaries.py
@@ -77,7 +83,18 @@ jobs:
           --cov-fail-under=90
       - name: Build wheel and sdist
         run: uv run python -m build
-      - name: Verify package import
-        run: uv run python -c "import autoanalyst; print(autoanalyst.__version__)"
+      - name: Export frozen runtime requirements
+        run: uv export --frozen --no-dev --no-emit-project --output-file build/runtime-requirements.txt
+      - name: Verify installed wheel outside the source tree
+        shell: pwsh
+        run: |
+          $wheel = (Get-ChildItem dist/autoanalyst-*.whl | Select-Object -First 1).FullName
+          $wheelDigest = (Get-FileHash -LiteralPath $wheel -Algorithm SHA256).Hash.ToLowerInvariant()
+          $wheelStage = Join-Path "build/wheel-check" $wheelDigest
+          New-Item -ItemType Directory -Force -Path $wheelStage | Out-Null
+          $checkedWheel = Join-Path $wheelStage (Split-Path $wheel -Leaf)
+          Copy-Item -LiteralPath $wheel -Destination $checkedWheel -Force
+          uv run --no-project --python 3.12 --with-requirements build/runtime-requirements.txt --with "$checkedWheel" python -I -m autoanalyst.desktop --self-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Desktop self-test
         run: uv run python -m autoanalyst.desktop --self-test

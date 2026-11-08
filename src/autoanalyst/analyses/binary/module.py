@@ -53,7 +53,14 @@ _SPLIT_WARNING_CLASS_COUNT = 30
 
 class BinaryClassificationModule:
     MODULE_VERSION = "2.0"
-    OPERATIONS = ("train_validate", "final_evaluate", "score_new_data")
+    OPERATIONS = (
+        "train_validate",
+        "final_evaluate",
+        "score_new_data",
+        "audit_model",
+        "calibration_report",
+        "drift_report",
+    )
 
     def __init__(self, catalog: SQLiteCatalog, artifact_store: ArtifactStore) -> None:
         self.catalog = catalog
@@ -87,10 +94,22 @@ class BinaryClassificationModule:
             if split_policy not in {"stratified", "group", "time", "group_time"}:
                 issues.append(ValidationIssue("binary.invalid_split_policy"))
         if (
-            spec.operation in {"final_evaluate", "score_new_data"}
+            spec.operation
+            in {
+                "final_evaluate",
+                "score_new_data",
+                "audit_model",
+                "calibration_report",
+                "drift_report",
+            }
             and "training_run_id" not in spec.parameters
         ):
             issues.append(ValidationIssue("binary.training_run_required"))
+        if spec.operation == "audit_model" and (
+            type(spec.parameters.get("folds", 3)) is not int
+            or not 2 <= spec.parameters.get("folds", 3) <= 5
+        ):
+            issues.append(ValidationIssue("binary.audit_folds"))
         return tuple(issues)
 
     def check_applicability(self, spec: AnalysisSpec) -> ApplicabilityReport:
@@ -134,6 +153,16 @@ class BinaryClassificationModule:
             return self._train_validate(spec, context)
         if spec.operation == "final_evaluate":
             return self._final_evaluate(spec, context)
+        if spec.operation == "audit_model":
+            from .audit import audit_model
+
+            return audit_model(self, spec, context)
+        if spec.operation in {"calibration_report", "drift_report"}:
+            from .audit import calibration_report, drift_report
+
+            return (calibration_report if spec.operation == "calibration_report" else drift_report)(
+                self, spec, context
+            )
         return self._score(spec, context)
 
     def _train_validate(self, spec: AnalysisSpec, context: ExecutionContext) -> ResultDraft:
@@ -600,6 +629,7 @@ class BinaryClassificationModule:
     def _assert_no_dataset_leakage(self, version_id: str, protected: set[str]) -> None:
         visited: set[str] = set()
         stack = [version_id]
+        steps = []
         while stack:
             current = stack.pop()
             if current in visited:
@@ -608,19 +638,21 @@ class BinaryClassificationModule:
             version = self.catalog.get_version(current)
             if version.recipe_id:
                 recipe = self.catalog.get_preparation_recipe(version.recipe_id)
-                for step in recipe.ordered_steps:
-                    if step.learning_scope is LearningScope.DATASET and protected.intersection(
-                        step.affected_column_ids
-                    ):
-                        raise MethodNotApplicableError(
-                            {
-                                "reason": "binary.dataset_level_leakage",
-                                "step_id": step.step_id,
-                                "operation": step.operation,
-                            }
-                        )
+                steps.extend(recipe.ordered_steps)
             for edge in self.catalog.get_version_lineage(current):
                 stack.append(str(edge["input_version_id"]))
+        joined = any(step.operation == "join_rows" for step in steps)
+        for step in steps:
+            if step.learning_scope is LearningScope.DATASET and (
+                joined or protected.intersection(step.affected_column_ids)
+            ):
+                raise MethodNotApplicableError(
+                    {
+                        "reason": "binary.dataset_level_leakage",
+                        "step_id": step.step_id,
+                        "operation": step.operation,
+                    }
+                )
 
     def _save_model(self, model, spec: AnalysisSpec, context: ExecutionContext) -> Artifact:
         staged = self.artifact_store.create_staging(

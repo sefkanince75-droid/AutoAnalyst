@@ -24,6 +24,64 @@ class _Event:
         return False
 
 
+def test_snapshot_restore_preserves_model_holdout_report_and_resumes_scoring(tmp_path):
+    from autoanalyst.application.snapshots import WorkspaceSnapshotService
+    from autoanalyst.reporting import ReportService
+
+    catalog, store, project, imported, columns = _workspace(tmp_path / "original")
+    runs, coordinator, module, _, training, result = _train(
+        catalog, store, project, imported, columns
+    )
+    spec = _spec(
+        project,
+        imported,
+        columns,
+        operation="final_evaluate",
+        parameters={"training_run_id": training.run_id},
+    )
+    final = coordinator.create_run(
+        spec, request_key="snapshot-final", parent_run_id=training.run_id
+    )
+    final = coordinator.execute_inline(final.run_id, module, cancellation_event=_Event())
+    lock = BinaryStore(catalog).get_holdout_lock(training.run_id)
+    reports = ReportService(catalog, store)
+    report = reports.render(final.result_id, format="html", language="tr")
+    report_bytes = reports.artifact_bytes(report)
+    ProjectService(catalog).set_archived(project.project_id, True, expected_revision=0)
+    snapshot = WorkspaceSnapshotService(catalog, store).export_snapshot(
+        tmp_path / "model.aasnapshot"
+    )
+    summary = WorkspaceSnapshotService.inspect_snapshot(snapshot)
+    assert summary.models == 1 and summary.results >= 2
+    target = WorkspaceSnapshotService.import_snapshot(snapshot, tmp_path / "restored", trusted=True)
+    restored = SQLiteCatalog(target)
+    restored_store = ArtifactStore(target)
+    assert BinaryStore(restored).get_holdout_lock(training.run_id) == lock
+    assert RunStore(restored).get_result(result.result_id) == result
+    assert restored.get_project(project.project_id).archived_at is not None
+    assert ReportService(restored, restored_store).artifact_bytes(report) == report_bytes
+    scoring = _spec(
+        project,
+        imported,
+        columns,
+        operation="score_new_data",
+        parameters={
+            "training_run_id": training.run_id,
+            "feature_mapping": _identity_mapping(columns),
+        },
+    )
+    restored_coordinator = ExecutionCoordinator(RunStore(restored))
+    run = restored_coordinator.create_run(
+        scoring, request_key="restored-scoring", parent_run_id=training.run_id
+    )
+    completed = restored_coordinator.execute_inline(
+        run.run_id,
+        BinaryClassificationModule(restored, restored_store),
+        cancellation_event=_Event(),
+    )
+    assert completed.status is RunStatus.COMPLETED
+
+
 def _workspace(tmp_path):
     catalog = SQLiteCatalog(tmp_path)
     store = ArtifactStore(catalog.paths.root)
@@ -324,3 +382,90 @@ def test_result_and_holdout_reported_state_publish_atomically(tmp_path):
         ).fetchone()
     assert result_row is None
     assert lock_row["status"] == "access_started"
+
+
+def test_audit_folds_use_only_training_and_preserve_original_model(tmp_path):
+    catalog, store, project, imported, columns = _workspace(tmp_path)
+    runs, coordinator, module, _, training, saved = _train(
+        catalog, store, project, imported, columns
+    )
+    split = module._load_split(saved.provenance["split_artifact"])
+    allowed = set(split.loc[split.partition == "train", "row_id"])
+    protected = set(split.loc[split.partition != "train", "row_id"])
+    model_before = store.resolve_relative_path(
+        catalog.get_artifact(saved.provenance["model_artifact"]["artifact_id"]).relative_path
+    ).read_bytes()
+    spec = _spec(
+        project,
+        imported,
+        columns,
+        operation="audit_model",
+        parameters={"training_run_id": training.run_id, "folds": 3},
+    )
+    run = coordinator.create_run(spec, request_key="audit")
+    completed = coordinator.execute_inline(run.run_id, module, cancellation_event=_Event())
+    result = runs.get_result(completed.result_id)
+    membership = next(t for t in result.tables if t.columns == ("fold", "row_id", "partition"))
+    observed = {r[1] for r in membership.rows}
+    assert observed == allowed and not observed.intersection(protected)
+    for fold in range(1, 4):
+        a = {r[1] for r in membership.rows if r[0] == fold and r[2] == "train"}
+        b = {r[1] for r in membership.rows if r[0] == fold and r[2] == "validation"}
+        assert not a.intersection(b) and a | b == allowed
+    assert result.provenance["model_card"]["environment"]
+    assert module.binary_store.get_holdout_lock(training.run_id) is None
+    assert (
+        store.resolve_relative_path(
+            catalog.get_artifact(saved.provenance["model_artifact"]["artifact_id"]).relative_path
+        ).read_bytes()
+        == model_before
+    )
+
+
+def test_calibration_uses_validation_and_does_not_replace_selection(tmp_path):
+    catalog, store, project, imported, columns = _workspace(tmp_path)
+    runs, coordinator, module, _, training, saved = _train(
+        catalog, store, project, imported, columns
+    )
+    spec = _spec(
+        project,
+        imported,
+        columns,
+        operation="calibration_report",
+        parameters={"training_run_id": training.run_id},
+    )
+    run = coordinator.create_run(spec, request_key="calibration")
+    completed = coordinator.execute_inline(run.run_id, module, cancellation_event=_Event())
+    result = runs.get_result(completed.result_id)
+    assert len(result.metrics) == 4 and all(
+        m.dimensions["partition"] == "validation" for m in result.metrics
+    )
+    assert all(0 <= m.value <= 1 for m in result.metrics if m.name == "brier_score")
+    assert result.methodology["final_holdout_used"] is False
+    assert runs.result_for_run(training.run_id) == saved
+    assert module.binary_store.get_holdout_lock(training.run_id) is None
+
+
+def test_drift_compares_training_reference_without_loading_model(tmp_path, monkeypatch):
+    catalog, store, project, imported, columns = _workspace(tmp_path)
+    runs, coordinator, module, _, training, _ = _train(catalog, store, project, imported, columns)
+    newer = CSVIngestor(catalog, store).import_csv(
+        project_id=project.project_id,
+        dataset_id=imported.version.dataset_id,
+        source=("x,cat,target\n" + "\n".join("10000,NEW,0" for _ in range(40)) + "\n").encode(),
+    )
+    newcols = {c.display_name: c for c in newer.columns if not c.is_system}
+    mapping = {columns[name]["column_id"]: newcols[name].column_id for name in ("x", "cat")}
+    monkeypatch.setattr(module, "_load_model", lambda *a: pytest.fail("drift loaded model"))
+    spec = _spec(
+        project,
+        newer,
+        columns,
+        operation="drift_report",
+        parameters={"training_run_id": training.run_id, "feature_mapping": mapping},
+    )
+    run = coordinator.create_run(spec, request_key="drift")
+    completed = coordinator.execute_inline(run.run_id, module, cancellation_event=_Event())
+    result = runs.get_result(completed.result_id)
+    assert all(row[-1] for row in result.tables[0].rows)
+    assert result.methodology["reference_partition"] == "train_only"

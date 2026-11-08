@@ -38,6 +38,8 @@ OPERATIONS = (
     "correlation",
     "welch_two_groups",
     "fisher_2x2",
+    "mean_interval",
+    "proportion_interval",
 )
 
 
@@ -76,15 +78,30 @@ class ComparisonModule:
                 "row_positive",
                 "column_positive",
             ),
+            "mean_interval": ("column_id", "independence_confirmed"),
+            "proportion_interval": ("column_id", "success_label", "independence_confirmed"),
         }.get(spec.operation, ())
         for key in required:
             if key not in params:
                 issues.append(ValidationIssue("comparison.missing_parameter", {"parameter": key}))
         if (
-            spec.operation == "welch_two_groups"
+            spec.operation in {"welch_two_groups", "mean_interval", "proportion_interval"}
             and params.get("independence_confirmed") is not True
         ):
             issues.append(ValidationIssue("comparison.independence_not_confirmed"))
+        if spec.operation in {
+            "mean_interval",
+            "proportion_interval",
+            "welch_two_groups",
+            "correlation",
+        }:
+            confidence = params.get("confidence", 0.95)
+            if (
+                isinstance(confidence, bool)
+                or not isinstance(confidence, (int, float))
+                or not 0.8 <= confidence <= 0.99
+            ):
+                issues.append(ValidationIssue("comparison.invalid_confidence"))
         return tuple(issues)
 
     def check_applicability(self, spec: AnalysisSpec) -> ApplicabilityReport:
@@ -116,7 +133,12 @@ class ComparisonModule:
             )
         context.raise_if_cancelled()
         op = spec.operation
-        if op == "group_summary":
+        context.emit_progress("comparison", 0.0)
+        if op in {"mean_interval", "proportion_interval"}:
+            from .intervals import confidence_interval
+
+            draft = confidence_interval(self, spec)
+        elif op == "group_summary":
             draft = self._group_summary(spec)
         elif op == "distribution":
             draft = self._distribution(spec)
@@ -129,6 +151,7 @@ class ComparisonModule:
         else:
             draft = self._fisher(spec)
         context.raise_if_cancelled()
+        context.emit_progress("comparison", 1.0)
         return draft
 
     def _load(
@@ -244,8 +267,16 @@ class ComparisonModule:
         if len(valid) < 3 or valid.x.nunique() < 2 or valid.y.nunique() < 2:
             raise MethodNotApplicableError({"reason": "correlation_insufficient_variation"})
         method = str(spec.parameters.get("method", "pearson"))
+        interval = None
         if method == "pearson":
-            value = float(stats.pearsonr(valid.x, valid.y).statistic)
+            estimate = stats.pearsonr(valid.x, valid.y)
+            value = float(estimate.statistic)
+            if spec.parameters.get("independence_confirmed") is True and len(valid) > 3:
+                bounds = estimate.confidence_interval(
+                    float(spec.parameters.get("confidence", 0.95))
+                )
+                if np.isfinite([bounds.low, bounds.high]).all():
+                    interval = (float(bounds.low), float(bounds.high))
         elif method == "spearman":
             value = float(stats.spearmanr(valid.x, valid.y).statistic)
         else:
@@ -255,6 +286,7 @@ class ComparisonModule:
             value,
             {"method": method, "x_column_id": x_id, "y_column_id": y_id},
             len(valid),
+            interval=interval,
         )
         return self._draft(
             spec,
@@ -279,7 +311,10 @@ class ComparisonModule:
         va, vb = float(np.var(a, ddof=1)), float(np.var(b, ddof=1))
         se2 = va / len(a) + vb / len(b)
         df = se2**2 / (((va / len(a)) ** 2) / (len(a) - 1) + ((vb / len(b)) ** 2) / (len(b) - 1))
-        half = float(stats.t.ppf(0.975, df) * math.sqrt(se2))
+        half = float(
+            stats.t.ppf((1 + float(spec.parameters.get("confidence", 0.95))) / 2, df)
+            * math.sqrt(se2)
+        )
         metrics = (
             _metric(
                 "mean_difference",
@@ -373,6 +408,17 @@ class ComparisonModule:
         }
         if spec.operation == "welch_two_groups":
             methodology["independence_confirmed"] = True
+            methodology["confidence_level"] = float(spec.parameters.get("confidence", 0.95))
+            methodology["interval_method"] = "welch_satterthwaite"
+        if spec.operation in {"correlation", "welch_two_groups", "fisher_2x2"}:
+            methodology["multiple_comparison_adjustment"] = "none_single_requested_comparison"
+            methodology["interpretation"] = "association_not_causation"
+        if spec.operation == "correlation":
+            methodology["independence_confirmed"] = (
+                spec.parameters.get("independence_confirmed") is True
+            )
+            methodology["confidence_level"] = float(spec.parameters.get("confidence", 0.95))
+            methodology["interval_method"] = "fisher_z_if_pearson_independent_n_gt_3_else_none"
         return ResultDraft(
             outcome=ResultOutcome.SUCCEEDED,
             metrics=tuple(metrics),

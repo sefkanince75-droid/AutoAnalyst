@@ -158,8 +158,17 @@ class SQLiteCatalog:
             ]
         return tuple(self.get_project(project_id) for project_id in ids)
 
-    def rename_project(self, project_id: str, name: str, updated_at: datetime) -> object:
+    def rename_project(
+        self,
+        project_id: str,
+        name: str,
+        updated_at: datetime,
+        *,
+        expected_revision: int | None = None,
+    ) -> object:
         current = self.get_project(project_id)
+        if expected_revision is not None and current.revision != expected_revision:
+            raise SchemaError({"reason": "project_revision_conflict"})
         next_revision = current.revision + 1
         with self.transaction() as connection:
             cursor = connection.execute(
@@ -169,6 +178,40 @@ class SQLiteCatalog:
             )
             if cursor.rowcount != 1:
                 raise SchemaError({"reason": "project_revision_conflict", "project_id": project_id})
+        return self.get_project(project_id)
+
+    def set_project_archived(
+        self, project_id: str, archived: bool, *, expected_revision: int
+    ) -> object:
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ?", (project_id,)
+            ).fetchone()
+            if row is None:
+                raise DataError({"reason": "project_not_found"})
+            if row["revision"] != expected_revision:
+                raise SchemaError({"reason": "project_revision_conflict"})
+            if bool(row["archived_at"]) == archived:
+                return self.get_project(project_id)
+            from ..execution.data_tasks import active_data_task
+
+            active_task = active_data_task(self.paths.root)
+            if archived and active_task and active_task.get("project_id") == project_id:
+                raise SchemaError({"reason": "project_has_active_runs"})
+            if (
+                archived
+                and connection.execute(
+                    "SELECT 1 FROM analysis_runs WHERE project_id = ? AND status IN ('pending', 'running') LIMIT 1",
+                    (project_id,),
+                ).fetchone()
+                is not None
+            ):
+                raise SchemaError({"reason": "project_has_active_runs"})
+            stamp = _timestamp(utc_now())
+            connection.execute(
+                "UPDATE projects SET archived_at = ?, updated_at = ?, revision = revision + 1 WHERE project_id = ?",
+                (stamp if archived else None, stamp, project_id),
+            )
         return self.get_project(project_id)
 
     def insert_dataset(self, dataset: Dataset) -> None:
@@ -294,7 +337,16 @@ class SQLiteCatalog:
             _move_head(connection, dataset, version.version_id, reason, utc_now())
         return self.get_dataset(version.dataset_id)
 
-    def move_head(self, dataset_id: str, version_id: str, *, reason: str) -> Dataset:
+    def move_head(
+        self,
+        dataset_id: str,
+        version_id: str,
+        *,
+        reason: str,
+        expected_project_id: str | None = None,
+        expected_head_version_id: str | None = None,
+        expected_head_revision: int | None = None,
+    ) -> Dataset:
         with self.transaction() as connection:
             dataset_row = connection.execute(
                 "SELECT * FROM datasets WHERE dataset_id = ?", (dataset_id,)
@@ -306,6 +358,16 @@ class SQLiteCatalog:
                 raise DataError({"reason": "dataset_or_version_not_found"})
             if version_row["dataset_id"] != dataset_id:
                 raise SchemaError({"reason": "version_dataset_mismatch"})
+            if expected_project_id is not None and dataset_row["project_id"] != expected_project_id:
+                raise SchemaError({"reason": "restore_project_mismatch"})
+            if (
+                expected_head_revision is not None
+                and dataset_row["head_revision"] != expected_head_revision
+            ) or (
+                expected_head_version_id is not None
+                and dataset_row["head_version_id"] != expected_head_version_id
+            ):
+                raise SchemaError({"reason": "restore_head_changed"})
             _move_head(connection, _dataset(dataset_row), version_id, reason, utc_now())
         return self.get_dataset(dataset_id)
 
@@ -570,6 +632,13 @@ class SQLiteCatalog:
             )
             seen_sources: set[str] = set()
             source_order = 0
+            join_inputs = {
+                json.loads(row["parameters_json"])["right_version_id"]
+                for row in connection.execute(
+                    "SELECT parameters_json FROM preparation_steps WHERE recipe_id=? AND operation='join_rows'",
+                    (preview["recipe_id"],),
+                )
+            }
             for input_order, input_version_id in enumerate(input_ids):
                 connection.execute(
                     "INSERT INTO dataset_version_lineage VALUES (?, ?, ?, ?, ?)",
@@ -577,7 +646,11 @@ class SQLiteCatalog:
                         version.version_id,
                         input_version_id,
                         input_order,
-                        "base" if input_order == 0 else "append",
+                        "base"
+                        if input_order == 0
+                        else "join"
+                        if input_version_id in join_inputs
+                        else "append",
                         preview["recipe_id"],
                     ),
                 )

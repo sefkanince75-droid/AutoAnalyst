@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tomllib
+from importlib.metadata import version
 from pathlib import Path
 
 from autoanalyst import __version__
@@ -12,7 +13,11 @@ def test_release_candidate_version_is_consistent() -> None:
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert pyproject["project"]["version"] == __version__
+    assert (
+        pyproject["tool"]["setuptools"]["dynamic"]["version"]["attr"] == "autoanalyst.__version__"
+    )
+    assert "version" in pyproject["project"]["dynamic"]
+    assert version("autoanalyst") == __version__
     assert __version__ in readme
     assert __version__.startswith("2.0.0")
 

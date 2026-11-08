@@ -96,6 +96,23 @@ def read_lease(workspace: str | Path) -> WorkerLease | None:
     return WorkerLease(run_id, pid, float(create_time) if create_time is not None else None)
 
 
+def adopt_worker(workspace: str | Path, run_id: str, pid: int) -> WorkerLease:
+    """Transfer a launcher lease only to its verified descendant execution process."""
+    current = read_lease(workspace)
+    owner = owned_process(workspace, run_id)
+    process = psutil.Process(pid)
+    if (
+        current is None
+        or current.run_id != run_id
+        or owner is None
+        or (owner.pid != pid and owner.pid not in {p.pid for p in process.parents()})
+    ):
+        raise ResourceError({"reason": "worker_lease_lost", "run_id": run_id})
+    lease = WorkerLease(run_id, pid, float(process.create_time()))
+    _replace_lease(workspace, lease)
+    return lease
+
+
 def owned_process(workspace: str | Path, run_id: str) -> psutil.Process | None:
     lease = read_lease(workspace)
     if lease is None or lease.run_id != run_id or lease.pid is None or lease.create_time is None:

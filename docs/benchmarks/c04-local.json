@@ -1,0 +1,116 @@
+{
+  "synthetic_only": true,
+  "platform": "Windows-11-10.0.26300-SP0",
+  "python": "3.12.11",
+  "logical_cpus": 8,
+  "total_ram_bytes": 16843096064,
+  "versions": {
+    "pandas": "2.3.3",
+    "pyarrow": "24.0.0",
+    "duckdb": "1.5.5",
+    "psutil": "7.2.2"
+  },
+  "budget": {
+    "memory_bytes": 1610612736,
+    "seconds": 120,
+    "disk_bytes": 1073741824,
+    "free_disk_bytes": 134217728
+  },
+  "worker_sampling_seconds": 0.1,
+  "notes": [
+    "Worker RSS includes dependency loading; subprocess startup before monitor initialization is excluded from elapsed time.",
+    "File growth is logical net workspace bytes; it is not total writes or allocated disk blocks.",
+    "These are local synthetic measurements, not hardware-independent performance guarantees.",
+    "Fingerprint comparison samples process RSS every 0.005 seconds in separate processes."
+  ],
+  "cases": [
+    {
+      "rows": 25000,
+      "columns": 8,
+      "source_bytes": 973580,
+      "import": {
+        "status": "completed",
+        "elapsed_seconds": 1.9839999999385327,
+        "peak_rss_bytes": 282062848,
+        "disk_growth_bytes": 3004147
+      },
+      "preparation_two_steps": {
+        "status": "completed",
+        "elapsed_seconds": 0.9690000000409782,
+        "peak_rss_bytes": 124116992,
+        "disk_growth_bytes": 457479
+      }
+    },
+    {
+      "rows": 100000,
+      "columns": 8,
+      "source_bytes": 3911812,
+      "import": {
+        "status": "completed",
+        "elapsed_seconds": 4.26500000001397,
+        "peak_rss_bytes": 154054656,
+        "disk_growth_bytes": 11650251
+      },
+      "preparation_two_steps": {
+        "status": "completed",
+        "elapsed_seconds": 0.9370000000344589,
+        "peak_rss_bytes": 133742592,
+        "disk_growth_bytes": 2243420
+      }
+    },
+    {
+      "rows": 20000,
+      "columns": 80,
+      "source_bytes": 7825923,
+      "import": {
+        "status": "completed",
+        "elapsed_seconds": 6.592999999993481,
+        "peak_rss_bytes": 359907328,
+        "disk_growth_bytes": 19908699
+      },
+      "preparation_two_steps": {
+        "status": "completed",
+        "elapsed_seconds": 0.9849999999860302,
+        "peak_rss_bytes": 136527872,
+        "disk_growth_bytes": 999468
+      }
+    },
+    {
+      "rows": 1000000,
+      "columns": 5,
+      "source_bytes": 24448510,
+      "import": {
+        "status": "completed",
+        "elapsed_seconds": 26.17200000002049,
+        "peak_rss_bytes": 432918528,
+        "disk_growth_bytes": 78872218
+      },
+      "preparation_two_steps": {
+        "status": "completed",
+        "elapsed_seconds": 1.75,
+        "peak_rss_bytes": 294719488,
+        "disk_growth_bytes": 18653340
+      }
+    }
+  ],
+  "fingerprint_comparison": [
+    {
+      "mode": "legacy",
+      "rows": 50000,
+      "columns": 8,
+      "seconds": 1.3305449000326917,
+      "baseline_rss_bytes": 105615360,
+      "peak_rss_bytes": 299782144,
+      "sha256": "01522b3d28b2834a9b00a17f63df4e69c950014f440e1cc1173df1af7bac4d1d"
+    },
+    {
+      "mode": "stream",
+      "rows": 50000,
+      "columns": 8,
+      "seconds": 2.163420800003223,
+      "baseline_rss_bytes": 105488384,
+      "peak_rss_bytes": 105631744,
+      "sha256": "01522b3d28b2834a9b00a17f63df4e69c950014f440e1cc1173df1af7bac4d1d"
+    }
+  ]
+}

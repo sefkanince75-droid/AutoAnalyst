@@ -13,7 +13,7 @@ from autoanalyst.application.datasets import DatasetService
 from autoanalyst.application.projects import ProjectService
 from autoanalyst.data.ingest import CSVIngestor
 from autoanalyst.data.schema import INTERNAL_ROW_ID, INTERNAL_ROW_ORDER
-from autoanalyst.domain.errors import SchemaError
+from autoanalyst.domain.errors import AutoAnalystError, SchemaError
 from autoanalyst.storage.artifacts import ArtifactStore
 from autoanalyst.storage.sqlite import SQLiteCatalog
 
@@ -25,6 +25,20 @@ def _workspace(tmp_path: Path):
     dataset = datasets.create(project.project_id, "Orders")
     ingestor = CSVIngestor(catalog, ArtifactStore(catalog.paths.root))
     return catalog, project, datasets, dataset, ingestor
+
+
+@pytest.mark.parametrize("content", [b"", b"a,a\n1,2\n", b"a,b\n", b"a,b\n1,2\n3,4,5\n"])
+def test_rejected_csv_leaves_no_artifacts_or_head_change(tmp_path, content):
+    catalog, project, datasets, dataset, ingestor = _workspace(tmp_path)
+    with pytest.raises(AutoAnalystError):
+        ingestor.import_csv(
+            project_id=project.project_id, dataset_id=dataset.dataset_id, source=content
+        )
+    assert datasets.current_version(dataset.dataset_id) is None
+    with catalog.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM artifacts").fetchone()[0] == 0
+    assert not [p for p in catalog.paths.projects.rglob("*") if p.is_file()]
+    assert not list(catalog.paths.staging.iterdir())
 
 
 def test_csv_import_preserves_raw_and_creates_canonical_parquet(tmp_path: Path) -> None:

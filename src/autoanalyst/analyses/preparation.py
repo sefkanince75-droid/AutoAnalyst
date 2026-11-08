@@ -124,6 +124,7 @@ class PreparationModule:
         if dataset.head_version_id != spec.input_version_id:
             raise MethodNotApplicableError({"reason": "preparation_base_not_current_head"})
 
+        context.emit_progress("preparation", 0.0)
         computation = self.engine.preview(
             recipe,
             preview_id=context.run_id,
@@ -131,6 +132,7 @@ class PreparationModule:
             expires_at=utc_now() + timedelta(hours=1),
         )
         context.raise_if_cancelled()
+        context.emit_progress("preparation", 1.0)
         preview = computation.preview
 
         metrics = (

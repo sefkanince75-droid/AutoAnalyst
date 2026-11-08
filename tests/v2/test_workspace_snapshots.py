@@ -20,7 +20,7 @@ def test_workspace_snapshot_round_trip_preserves_catalog_and_artifacts(
 
     exported = service.export_snapshot(snapshot_path)
     restored_root = tmp_path / "restored-workspace"
-    WorkspaceSnapshotService.import_snapshot(exported, restored_root)
+    WorkspaceSnapshotService.import_snapshot(exported, restored_root, trusted=True)
 
     restored_catalog = SQLiteCatalog(restored_root)
     restored_store = ArtifactStore(restored_root)
@@ -62,6 +62,6 @@ def test_snapshot_import_rejects_path_traversal(tmp_path: Path) -> None:
         )
 
     with pytest.raises(SchemaError) as unsafe:
-        WorkspaceSnapshotService.import_snapshot(snapshot, tmp_path / "restore")
+        WorkspaceSnapshotService.import_snapshot(snapshot, tmp_path / "restore", trusted=True)
     assert unsafe.value.context["reason"] == "snapshot_path_unsafe"
     assert not (tmp_path / "escape.txt").exists()

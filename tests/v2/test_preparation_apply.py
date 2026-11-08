@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 
 import autoanalyst.storage.sqlite as sqlite_storage
@@ -58,6 +60,24 @@ def test_apply_is_idempotent(phase3_workspace) -> None:
     assert second == first
     assert len(phase3_workspace.datasets.version_history(phase3_workspace.dataset.dataset_id)) == 2
     assert phase3_workspace.datasets.get(phase3_workspace.dataset.dataset_id).head_revision == 2
+
+
+@pytest.mark.parametrize(
+    "expected",
+    [
+        {"expected_project_id": str(uuid4())},
+        {"expected_base_version_id": str(uuid4())},
+        {"expected_recipe_hash": "0" * 64},
+    ],
+)
+def test_apply_rejects_another_ui_context_before_modifying_head(phase3_workspace, expected):
+    ws = phase3_workspace
+    preview = _ready_preview(ws)
+    with pytest.raises(SchemaError) as mismatch:
+        ws.preparation.apply_preview(preview.preview_id, **expected)
+    assert mismatch.value.context["reason"] == "preparation_preview_context_mismatch"
+    assert ws.datasets.get(ws.dataset.dataset_id).head_revision == 1
+    assert ws.preparation.get_preview(preview.preview_id).status is PreviewStatus.READY
 
 
 def test_head_change_makes_preview_stale(phase3_workspace) -> None:

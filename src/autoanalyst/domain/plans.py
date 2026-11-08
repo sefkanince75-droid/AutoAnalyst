@@ -30,6 +30,8 @@ class AnalysisModuleId(str, Enum):
     PREPARATION = "preparation"
     COMPARISON = "comparison"
     BINARY_CLASSIFICATION = "binary_classification"
+    REGRESSION = "regression"
+    MULTICLASS_CLASSIFICATION = "multiclass_classification"
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +138,11 @@ class AnalysisSpec:
         column_ids = tuple(role.column_id for role in self.column_roles)
         if len(set(column_ids)) != len(column_ids):
             raise ValueError("AnalysisSpec cannot assign multiple roles to one column")
-        if self.module_id is AnalysisModuleId.BINARY_CLASSIFICATION:
+        if self.module_id in {
+            AnalysisModuleId.BINARY_CLASSIFICATION,
+            AnalysisModuleId.REGRESSION,
+            AnalysisModuleId.MULTICLASS_CLASSIFICATION,
+        }:
             targets = [role for role in self.column_roles if ColumnUsage.TARGET in role.usages]
             if self.operation == "train_validate" and len(targets) != 1:
                 raise ValueError("binary train_validate requires exactly one target column")

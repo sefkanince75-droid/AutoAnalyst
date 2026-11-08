@@ -7,12 +7,14 @@ from pathlib import Path
 from uuid import uuid4
 
 from ..domain.codec import canonical_json, utc_now
+from ..domain.errors import SchemaError
 from ..domain.plans import AnalysisModuleId
 from ..domain.results import AnalysisResult
 from ..domain.runs import RunStatus
 from ..storage.artifacts import ArtifactStore
 from ..storage.runs import RunStore
 from .lease import clear_stale_lease, owned_process, release_worker
+from .progress import read_worker_progress
 from .protocol import EventKind
 from .worker_protocol import draft_from_manifest, read_result_manifest
 
@@ -23,6 +25,21 @@ def reconcile_worker_run(store: RunStore, workspace: str | Path, run_id: str) ->
     current = store.get_run(run_id)
     if current.status in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}:
         return False
+
+    if current.status is RunStatus.RUNNING:
+        progress = read_worker_progress(workspace, run_id)
+        if progress is not None:
+            payload: dict[str, object] = {"fraction": progress.fraction}
+            if progress.model_id:
+                payload["model_id"] = progress.model_id
+            store.append_event(
+                run_id,
+                EventKind.PROGRESS.value,
+                stage=progress.stage,
+                payload=payload,
+                created_at=progress.updated_at,
+                deduplicate=True,
+            )
 
     try:
         manifest = read_result_manifest(workspace_path, run_id)
@@ -37,8 +54,8 @@ def reconcile_worker_run(store: RunStore, workspace: str | Path, run_id: str) ->
             _publish_success(store, workspace_path, run_id, manifest)
         elif status == "cancelled":
             if current.status in {RunStatus.PENDING, RunStatus.RUNNING}:
-                store.transition(run_id, status=RunStatus.CANCELLED)
-                store.append_event(run_id, EventKind.CANCELLED.value, stage="worker")
+                if _finish_terminal(store, run_id, RunStatus.CANCELLED):
+                    store.append_event(run_id, EventKind.CANCELLED.value, stage="worker")
         elif status == "failed":
             error_code = str(manifest.get("error_code") or "unexpected_execution")
             reason = "worker_reported_failure"
@@ -53,7 +70,14 @@ def reconcile_worker_run(store: RunStore, workspace: str | Path, run_id: str) ->
 
     if owned_process(workspace_path, run_id) is not None:
         return False
-    _fail_run(store, run_id, "unexpected_execution", "worker_interrupted")
+    if (workspace_path / "staging" / f"cancel-{run_id}.flag").is_file():
+        # A forced cancellation can stop the worker before it writes a terminal
+        # manifest. The durable cancellation request distinguishes this from an
+        # unexpected crash, including when reconciliation happens after restart.
+        if _finish_terminal(store, run_id, RunStatus.CANCELLED):
+            store.append_event(run_id, EventKind.CANCELLED.value, stage="worker")
+    else:
+        _fail_run(store, run_id, "unexpected_execution", "worker_interrupted")
     release_worker(workspace_path, run_id)
     return True
 
@@ -111,12 +135,24 @@ def _publish_success(store: RunStore, workspace: Path, run_id: str, manifest) ->
     )
     holdout_training_run_id = None
     if (
-        spec.module_id is AnalysisModuleId.BINARY_CLASSIFICATION
+        spec.module_id
+        in {
+            AnalysisModuleId.BINARY_CLASSIFICATION,
+            AnalysisModuleId.REGRESSION,
+            AnalysisModuleId.MULTICLASS_CLASSIFICATION,
+        }
         and spec.operation == "final_evaluate"
     ):
         holdout_training_run_id = str(spec.parameters["training_run_id"])
 
     with store.catalog.transaction() as connection:
+        # Multiple open UI sessions can observe the same manifest. Serialize
+        # publication and recheck inside the write lock before inserting anything.
+        row = connection.execute(
+            "SELECT status FROM analysis_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is None or row["status"] != RunStatus.RUNNING.value:
+            return
         for artifact in artifacts:
             connection.execute(
                 """INSERT INTO artifacts
@@ -205,10 +241,26 @@ def _fail_run(store: RunStore, run_id: str, error_code: str, reason: str) -> Non
     current = store.get_run(run_id)
     if current.status not in {RunStatus.PENDING, RunStatus.RUNNING}:
         return
-    store.transition(run_id, status=RunStatus.FAILED, error_code=error_code)
-    store.append_event(
-        run_id,
-        EventKind.FAILED.value,
-        stage="recovery",
-        payload={"error_code": error_code, "reason": reason},
-    )
+    if _finish_terminal(store, run_id, RunStatus.FAILED, error_code):
+        store.append_event(
+            run_id,
+            EventKind.FAILED.value,
+            stage="recovery",
+            payload={"error_code": error_code, "reason": reason},
+        )
+
+
+def _finish_terminal(
+    store: RunStore, run_id: str, status: RunStatus, error_code: str | None = None
+) -> bool:
+    try:
+        store.transition(run_id, status=status, error_code=error_code)
+    except SchemaError:
+        if store.get_run(run_id).status in {
+            RunStatus.COMPLETED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+        }:
+            return False
+        raise
+    return True

@@ -90,6 +90,7 @@ class ProfilingModule:
             row for row in self.catalog.list_columns(spec.input_version_id) if not row["is_system"]
         )
         column_ids = tuple(str(row["column_id"]) for row in columns)
+        context.emit_progress("profile.load", 0.0)
         arrow = self.table_access.selected_columns(spec.input_version_id, column_ids)
         frame = arrow.to_pandas()
         physical_to_meta = {str(row["physical_name"]): row for row in columns}
@@ -109,7 +110,8 @@ class ProfilingModule:
         charts: list[ChartSpec] = []
         bins = int(spec.parameters.get("histogram_bins", 20))
 
-        for display_name in frame.columns:
+        for index, display_name in enumerate(frame.columns):
+            context.emit_progress("profile.columns", index / max(1, len(frame.columns)))
             context.raise_if_cancelled()
             series = frame[display_name]
             meta = display_to_meta[display_name]
@@ -186,6 +188,7 @@ class ProfilingModule:
                     )
                 )
 
+        context.emit_progress("profile.columns", 1.0)
         profile_table = ResultTable(
             table_id=str(uuid4()),
             columns=(

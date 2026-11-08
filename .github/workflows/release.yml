@@ -1,12 +1,17 @@
-name: V2 Release Candidate
+name: V2 pre-release package validation
 
 on:
   workflow_dispatch:
   push:
     branches:
       - v2-completion
-    tags:
-      - "v2.*"
+      - 'codex/**'
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: pre-release-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -33,28 +38,22 @@ jobs:
         shell: pwsh
         run: |
           uv run python tools/release_manifest.py | Out-File -Encoding utf8 .\dist\release-manifest.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item .\uv.lock .\dist\uv.lock
       - name: Build portable Windows executable
         shell: pwsh
         run: >-
-          uv run pyinstaller --noconfirm --clean --onefile
-          --name AutoAnalyst
-          --add-data "app.py;."
-          --add-data "uv.lock;."
-          --add-data "src/autoanalyst/storage/migrations;autoanalyst/storage/migrations"
-          --collect-all streamlit
-          --collect-data autoanalyst
-          --collect-submodules autoanalyst.ui
-          --hidden-import autoanalyst.execution.worker
-          src/autoanalyst/desktop.py
+          uv run --frozen --group desktop python tools/build_release.py
       - name: Offline executable smoke test
         shell: pwsh
         run: |
-          $env:NO_PROXY = "*"
+          $env:NO_PROXY = "localhost,127.0.0.1"
           $env:HTTP_PROXY = "http://127.0.0.1:9"
           $env:HTTPS_PROXY = "http://127.0.0.1:9"
           .\dist\AutoAnalyst.exe --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\dist\AutoAnalyst.exe --self-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Create portable archive
         shell: pwsh
         run: >-

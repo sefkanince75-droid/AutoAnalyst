@@ -8,11 +8,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import duckdb
+import pyarrow.parquet as pq
 
 from ..domain.errors import DataError, SchemaError
 from ..storage.artifacts import ArtifactStore
 from ..storage.sqlite import SQLiteCatalog
 from .schema import INTERNAL_ROW_ORDER, DatasetColumn
+
+MAX_TABLE_PAGE_ROWS = 500
+MAX_TABLE_PAGE_COLUMNS = 50
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +24,12 @@ class TableFilter:
     column_id: str
     operator: str
     value: object = None
+
+
+@dataclass(frozen=True, slots=True)
+class DistinctValues:
+    values: tuple[object, ...]
+    has_more: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +87,56 @@ class TableAccess:
             return connection.execute(
                 f"SELECT {projection} FROM read_parquet(?) ORDER BY {order}",
                 [str(table.parquet_path)],
+            ).to_arrow_table()
+
+    def distinct_values(
+        self, version_id: str, column_id: str, *, limit: int = 200, search: str = ""
+    ) -> DistinctValues:
+        if (
+            type(limit) is not int
+            or not 1 <= limit <= 500
+            or not isinstance(search, str)
+            or len(search) > 200
+        ):
+            raise SchemaError({"reason": "invalid_table_page"})
+        table = self.resolve(version_id)
+        column = self._column(table, column_id)
+        name = self.quote_identifier(column.physical_name, table)
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"SELECT DISTINCT {name} FROM read_parquet(?) WHERE {name} IS NOT NULL AND strpos(CAST({name} AS VARCHAR), ?) > 0 ORDER BY {name} LIMIT ?",
+                [str(table.parquet_path), search, limit + 1],
+            ).fetchall()
+        return DistinctValues(tuple(row[0] for row in rows[:limit]), len(rows) > limit)
+
+    def page(
+        self,
+        version_id: str,
+        column_ids: tuple[str, ...],
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ):
+        """Return a bounded projection in stable source order, without full Arrow materialization."""
+        if (
+            type(limit) is not int
+            or not 1 <= limit <= MAX_TABLE_PAGE_ROWS
+            or type(offset) is not int
+            or not 0 <= offset < 2**63
+        ):
+            raise SchemaError({"reason": "invalid_table_page"})
+        if len(column_ids) > MAX_TABLE_PAGE_COLUMNS:
+            raise SchemaError({"reason": "table_page_column_limit"})
+        table = self.resolve(version_id)
+        selected = self._columns(table, column_ids)
+        projection = ", ".join(
+            self.quote_identifier(column.physical_name, table) for column in selected
+        )
+        order = self.quote_identifier(INTERNAL_ROW_ORDER, table)
+        with self._connection() as connection:
+            return connection.execute(
+                f"SELECT {projection} FROM read_parquet(?) ORDER BY {order} LIMIT ? OFFSET ?",
+                [str(table.parquet_path), limit, offset],
             ).to_arrow_table()
 
     def filtered_projection(
@@ -153,6 +213,25 @@ class TableAccess:
                 [str(table.parquet_path)],
             ).to_arrow_table()
 
+    @contextmanager
+    def export_batches(self, version_id: str):
+        """Stream all user columns in source order; keep connection alive for the reader."""
+        table = self.resolve(version_id)
+        columns = tuple(column for column in table.columns if not column.is_system)
+        if not columns:
+            raise SchemaError({"reason": "export_no_columns"})
+        projection = ", ".join(self.quote_identifier(c.physical_name, table) for c in columns)
+        order = self.quote_identifier(INTERNAL_ROW_ORDER, table)
+        with self._connection() as connection:
+            reader = connection.execute(
+                f"SELECT {projection} FROM read_parquet(?) ORDER BY {order}",
+                [str(table.parquet_path)],
+            ).to_arrow_reader(batch_size=65_536)
+            try:
+                yield columns, reader, pq.read_schema(table.parquet_path)
+            finally:
+                reader.close()
+
     def resolve(self, version_id: str) -> VersionTable:
         version = self.catalog.get_version(version_id)
         artifact = self.catalog.get_artifact(version.table_artifact_id)
@@ -196,6 +275,9 @@ class TableAccess:
             connection.execute("SET autoinstall_known_extensions = false")
             connection.execute("SET autoload_known_extensions = false")
             connection.execute("SET enable_progress_bar = false")
+            connection.execute("SET memory_limit = '512MiB'")
+            connection.execute("SET threads = 1")
+            connection.execute("SET max_temp_directory_size = '0B'")
             yield connection
         finally:
             connection.close()

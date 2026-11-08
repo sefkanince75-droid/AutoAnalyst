@@ -13,12 +13,16 @@ from .. import __version__
 from ..domain.codec import canonical_json, fingerprint, to_primitive, utc_now
 from ..domain.errors import DataError, SchemaError
 from ..domain.results import AnalysisResult, Report
+from ..localization import I18N, cell_text, finding_text, label
+from ..storage.activity import artifact_activity
 from ..storage.artifacts import ArtifactStore
 from ..storage.runs import RunStore
 from ..storage.sqlite import SQLiteCatalog
+from .charts import chart_views, summary_metrics, table_title
+from .summary import result_summary
 
-TEMPLATE_VERSION = __version__
-SUPPORTED_FORMATS = {"html", "markdown", "json", "csv"}
+TEMPLATE_VERSION = f"{__version__}/presentation-5"
+SUPPORTED_FORMATS = {"html", "markdown", "json", "csv", "pdf", "xlsx"}
 
 
 class ReportService:
@@ -27,6 +31,7 @@ class ReportService:
         self.artifact_store = artifact_store
         self.run_store = RunStore(catalog)
 
+    @artifact_activity
     def render(
         self,
         result_id: str,
@@ -139,98 +144,167 @@ class ReportService:
 
 
 def _render_bytes(result: AnalysisResult, fmt: str, language: str) -> tuple[bytes, str]:
+    if fmt in {"pdf", "xlsx"}:
+        from .binary_formats import render_binary
+
+        return render_binary(result, fmt, language)
     if fmt == "html":
         return _html(result, language).encode("utf-8"), "text/html; charset=utf-8"
     if fmt == "markdown":
         return _markdown(result, language).encode("utf-8"), "text/markdown; charset=utf-8"
     if fmt == "json":
-        payload = {"autoanalyst_version": __version__, "result": to_primitive(result)}
+        payload = {
+            "autoanalyst_version": __version__,
+            "result": to_primitive(result),
+            "summary": to_primitive(result_summary(result, language)),
+        }
         return canonical_json(payload).encode("utf-8"), "application/json"
-    return _csv_zip(result), "application/zip"
+    return _csv_zip(result, language), "application/zip"
 
 
 def _html(result: AnalysisResult, language: str) -> str:
-    title = "AutoAnalyst Analysis Report" if language == "en" else "AutoAnalyst Analiz Raporu"
+    t = I18N[language]
     metric_rows = "".join(
-        f"<tr><td>{escape(m.name)}</td><td>{escape(_metric_text(m))}</td>"
-        f"<td>{escape(str(dict(m.dimensions)))}</td></tr>"
+        f"<tr><td>{escape(label(m.name, language))}</td><td>{escape(_metric_text(m, language))}</td>"
+        f"<td>{escape(str({label(k, language): label(v, language) for k, v in m.dimensions.items()}))}</td></tr>"
         for m in result.metrics
     )
     findings = "".join(
-        f"<li><strong>{escape(f.code)}</strong> — {escape(f.severity.value)} "
-        f"{escape(str(dict(f.parameters)))}</li>"
-        for f in result.findings
+        f"<li>{escape(finding_text(f.code, language, f.parameters))}</li>" for f in result.findings
     )
-    tables = "".join(_html_table(table) for table in result.tables)
-    return f"""<!doctype html><html><head><meta charset=\"utf-8\"><title>{escape(title)}</title><style>body{{font-family:system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem}}table{{border-collapse:collapse;width:100%;margin:1rem 0}}th,td{{border:1px solid #bbb;padding:.4rem;text-align:left}}code{{white-space:pre-wrap}}@media print{{body{{margin:0}}}}</style></head><body><h1>{escape(title)}</h1><p><b>AutoAnalyst:</b> {escape(__version__)} · <b>Module:</b> {escape(result.module_id.value)} · <b>Outcome:</b> {escape(result.outcome.value)}</p><h2>Metrics</h2><table><thead><tr><th>Name</th><th>Value</th><th>Dimensions</th></tr></thead><tbody>{metric_rows}</tbody></table><h2>Findings</h2><ul>{findings}</ul><h2>Tables</h2>{tables}<h2>Methodology</h2><code>{escape(json.dumps(to_primitive(result.methodology), ensure_ascii=False, indent=2))}</code><h2>Provenance</h2><code>{escape(json.dumps(to_primitive(result.provenance), ensure_ascii=False, indent=2))}</code></body></html>"""
+    tables = "".join(
+        _html_table(table, language, index) for index, table in enumerate(result.tables, 1)
+    )
+    summary = "".join(
+        f'<div class="card"><b>{escape(label(m.name, language))}</b><br>'
+        f"<strong>{escape(_metric_text(m, language))}</strong></div>"
+        for m in summary_metrics(result)
+    )
+    summary = (
+        f'<h2>{escape(t["summary"])}</h2><div class="summary">{summary}</div>' if summary else ""
+    )
+    charts = _html_charts(result, language)
+    overview = result_summary(result, language)
+    executive = (
+        f"<h2>{escape(t['report_overview'])}</h2><ul>"
+        + "".join(f"<li>{escape(line)}</li>" for line in overview.lines)
+        + f"</ul><p>{escape(overview.scope)}</p>"
+    )
+    details = "".join(
+        f"<h2>{escape(t[key])}</h2><pre>{escape(json.dumps(to_primitive(value), ensure_ascii=False, indent=2))}</pre>"
+        for key, value in (("methodology", result.methodology), ("provenance", result.provenance))
+    )
+    return f"""<!doctype html><html lang="{language}"><head><meta charset="utf-8"><title>{escape(t["report_title"])}</title><style>body{{font-family:system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem}}table{{border-collapse:collapse;width:100%;margin:1rem 0}}th,td{{border:1px solid #bbb;padding:.4rem;text-align:left}}pre{{white-space:pre-wrap}}.summary{{display:flex;gap:1rem;flex-wrap:wrap}}.card{{border:1px solid #cbd5e1;border-radius:8px;padding:1rem;min-width:140px}}.card strong{{font-size:1.5rem}}figure{{margin:1rem 0;break-inside:avoid}}svg{{width:100%;height:auto}}figcaption{{font-size:.85rem}}@media print{{body{{margin:0}}}}</style></head><body><h1>{escape(t["report_title"])}</h1><p><b>AutoAnalyst:</b> {escape(__version__)} · <b>{escape(t["module"])}:</b> {escape(label(result.module_id.value, language))} · <b>{escape(t["outcome"])}:</b> {escape(label(result.outcome.value, language))}</p>{executive}{summary}{charts}<h2>{escape(t["metrics"])}</h2><table><thead><tr><th>{escape(t["metric"])}</th><th>{escape(t["value"])}</th><th>{escape(t["dimensions"])}</th></tr></thead><tbody>{metric_rows}</tbody></table><h2>{escape(t["findings"])}</h2><ul>{findings}</ul><h2>{escape(t["tables"])}</h2>{tables}{details}</body></html>"""
 
 
-def _html_table(table) -> str:
-    head = "".join(f"<th>{escape(str(c))}</th>" for c in table.columns)
+def _html_charts(result: AnalysisResult, language: str) -> str:
+    t = I18N[language]
+    if not result.charts:
+        return ""
+    sections = [f"<h2>{escape(t['charts'])}</h2>"]
+    indexes = {table.table_id: index for index, table in enumerate(result.tables, 1)}
+    for chart in chart_views(result, language):
+        if chart.svg:
+            source = t["chart_source"].format(index=indexes[chart.table_id])
+            sections.append(
+                f'<figure>{chart.svg}<figcaption><a href="#table-{chart.table_id}">'
+                f"{escape(source)}</a></figcaption></figure>"
+            )
+        else:
+            sections.append(
+                f'<p role="status"><b>{escape(chart.title)}</b>: {escape(chart.notice or "")}</p>'
+            )
+    return "".join(sections)
+
+
+def _html_table(table, language: str = "en", index: int = 1) -> str:
+    t = I18N[language]
+    head = "".join(f"<th>{escape(label(c, language))}</th>" for c in table.columns)
     body = "".join(
-        "<tr>" + "".join(f"<td>{escape(str(cell))}</td>" for cell in row) + "</tr>"
+        "<tr>"
+        + "".join(
+            f"<td>{escape(str(cell_text(cell, column, language)))}</td>"
+            for column, cell in zip(table.columns, row, strict=True)
+        )
+        + "</tr>"
         for row in table.rows[:500]
     )
-    note = "<p><em>Showing first 500 rows.</em></p>" if len(table.rows) > 500 else ""
-    return (
-        f"<h3>{escape(table.table_id)}</h3><table><thead><tr>{head}</tr></thead>"
-        f"<tbody>{body}</tbody></table>{note}"
+    note = (
+        "<p><em>" + t["first_rows"].format(limit=500) + "</em></p>" if len(table.rows) > 500 else ""
     )
+    return f'<h3 id="table-{table.table_id}">{escape(table_title(table, index, language))}</h3><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>{note}'
+
+
+def _md_cell(value) -> str:
+    return escape(str(value), quote=False).replace("|", "\\|").replace("\n", "<br>")
 
 
 def _markdown(result: AnalysisResult, language: str) -> str:
-    title = "AutoAnalyst Analysis Report" if language == "en" else "AutoAnalyst Analiz Raporu"
+    t = I18N[language]
+    overview = result_summary(result, language)
     lines = [
-        f"# {title}",
+        f"# {t['report_title']}",
         "",
         f"- AutoAnalyst: `{__version__}`",
-        f"- Module: `{result.module_id.value}`",
-        f"- Outcome: `{result.outcome.value}`",
+        f"- {t['module']}: {label(result.module_id.value, language)}",
+        f"- {t['outcome']}: {label(result.outcome.value, language)}",
         "",
-        "## Metrics",
+        f"## {t['report_overview']}",
         "",
-        "| Metric | Value | Dimensions |",
+        *("- " + _md_cell(line) for line in overview.lines),
+        "",
+        overview.scope,
+        "",
+        f"## {t['metrics']}",
+        "",
+        f"| {t['metric']} | {t['value']} | {t['dimensions']} |",
         "|---|---:|---|",
     ]
-    lines.extend(
-        f"| {m.name} | {_metric_text(m)} | `{dict(m.dimensions)}` |" for m in result.metrics
-    )
-    lines += ["", "## Findings", ""]
-    lines.extend(
-        f"- **{f.code}** ({f.severity.value}): `{dict(f.parameters)}`" for f in result.findings
-    )
+    for metric in result.metrics:
+        dims = {label(k, language): label(v, language) for k, v in metric.dimensions.items()}
+        lines.append(
+            f"| {_md_cell(label(metric.name, language))} | {_md_cell(_metric_text(metric, language))} | {_md_cell(dims)} |"
+        )
+    lines += ["", f"## {t['findings']}", ""]
+    lines.extend("- " + finding_text(f.code, language, f.parameters) for f in result.findings)
     for table in result.tables:
         lines += [
             "",
-            f"## Table `{table.table_id}`",
+            f"## {t['table']} `{table.table_id}`",
             "",
-            "| " + " | ".join(table.columns) + " |",
+            "| " + " | ".join(_md_cell(label(c, language)) for c in table.columns) + " |",
             "| " + " | ".join("---" for _ in table.columns) + " |",
         ]
         for row in table.rows[:100]:
-            lines.append("| " + " | ".join(str(cell).replace("|", "\\|") for cell in row) + " |")
+            lines.append(
+                "| "
+                + " | ".join(
+                    _md_cell(cell_text(value, column, language))
+                    for column, value in zip(table.columns, row, strict=True)
+                )
+                + " |"
+            )
         if len(table.rows) > 100:
-            lines.append("\n_Showing first 100 rows._")
-    lines += [
-        "",
-        "## Methodology",
-        "",
-        "```json",
-        json.dumps(to_primitive(result.methodology), ensure_ascii=False, indent=2),
-        "```",
-        "",
-        "## Provenance",
-        "",
-        "```json",
-        json.dumps(to_primitive(result.provenance), ensure_ascii=False, indent=2),
-        "```",
-    ]
+            lines += ["", "_" + t["first_rows"].format(limit=100) + "_"]
+    for key, value in (("methodology", result.methodology), ("provenance", result.provenance)):
+        lines += [
+            "",
+            f"## {t[key]}",
+            "",
+            "```json",
+            json.dumps(to_primitive(value), ensure_ascii=False, indent=2),
+            "```",
+        ]
     return "\n".join(lines) + "\n"
 
 
-def _csv_zip(result: AnalysisResult) -> bytes:
+def _csv_zip(result: AnalysisResult, language: str = "en") -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        overview = result_summary(result, language)
+        archive.writestr(
+            "summary.txt", ("\n".join((*overview.lines, "", overview.scope)) + "\n").encode("utf-8")
+        )
         metadata = io.StringIO(newline="")
         writer = csv.writer(metadata)
         writer.writerow(["key", "value"])
@@ -274,10 +348,13 @@ def _csv_safe(value):
     return value
 
 
-def _metric_text(metric) -> str:
+def _metric_text(metric, language: str = "en") -> str:
     if metric.value_state.value == "finite":
-        return str(metric.value)
-    return metric.value_state.value
+        value = str(metric.value)
+        if metric.interval is not None:
+            value += f" · {I18N[language]['confidence_interval']}: [{metric.interval[0]}, {metric.interval[1]}]"
+        return value
+    return label(metric.value_state.value, language)
 
 
 def _report(row) -> Report:

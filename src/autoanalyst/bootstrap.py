@@ -10,6 +10,7 @@ from .analyses.comparisons import ComparisonModule
 from .analyses.preparation import PreparationModule
 from .analyses.profiling import ProfilingModule
 from .analyses.registry import AnalysisRegistry
+from .analyses.supervised import MulticlassModule, RegressionModule
 from .execution.coordinator import ExecutionCoordinator
 from .execution.recovery import reconcile_interrupted_runs
 from .storage.artifacts import ArtifactStore
@@ -38,6 +39,8 @@ def build_registry(catalog: SQLiteCatalog, artifact_store: ArtifactStore) -> Ana
             PreparationModule(catalog, artifact_store),
             ComparisonModule(catalog, artifact_store),
             BinaryClassificationModule(catalog, artifact_store),
+            RegressionModule(catalog, artifact_store),
+            MulticlassModule(catalog, artifact_store),
         )
     )
 

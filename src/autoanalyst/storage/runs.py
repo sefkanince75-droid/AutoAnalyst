@@ -101,6 +101,17 @@ class RunStore:
             raise DataError({"reason": "analysis_run_payload_corrupt"})
         return values  # type: ignore[return-value]
 
+    def active_analysis_runs(self) -> tuple[AnalysisRun, ...]:
+        with self.catalog.connection() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM analysis_runs WHERE kind = 'analysis' "
+                "AND status IN ('pending', 'running') ORDER BY created_at, run_id"
+            ).fetchall()
+        values = tuple(from_json(row["payload_json"]) for row in rows)
+        if not all(isinstance(value, AnalysisRun) for value in values):
+            raise DataError({"reason": "analysis_run_payload_corrupt"})
+        return values  # type: ignore[return-value]
+
     def transition(
         self,
         run_id: str,
@@ -157,6 +168,7 @@ class RunStore:
         stage: str | None = None,
         payload: dict[str, Any] | None = None,
         created_at: datetime | None = None,
+        deduplicate: bool = False,
     ) -> int:
         if not event_type.strip():
             raise SchemaError({"reason": "run_event_type_required"})
@@ -167,6 +179,15 @@ class RunStore:
             ).fetchone()
             if exists is None:
                 raise DataError({"reason": "analysis_run_not_found", "run_id": run_id})
+            encoded = canonical_json(payload or {})
+            if deduplicate:
+                last = connection.execute(
+                    "SELECT sequence, stage, payload_json FROM run_events WHERE run_id = ? "
+                    "AND event_type = ? ORDER BY sequence DESC LIMIT 1",
+                    (run_id, event_type),
+                ).fetchone()
+                if last is not None and last["stage"] == stage and last["payload_json"] == encoded:
+                    return int(last["sequence"])
             sequence = int(
                 connection.execute(
                     "SELECT COALESCE(MAX(sequence), -1) + 1 FROM run_events WHERE run_id = ?",
@@ -182,17 +203,25 @@ class RunStore:
                     sequence,
                     event_type,
                     stage,
-                    canonical_json(payload or {}),
+                    encoded,
                     _ts(stamp),
                 ),
             )
         return sequence
 
-    def list_events(self, run_id: str) -> tuple[dict[str, Any], ...]:
+    def list_events(self, run_id: str, *, limit: int | None = None) -> tuple[dict[str, Any], ...]:
+        if limit is not None and (
+            isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500
+        ):
+            raise SchemaError({"reason": "invalid_event_limit"})
         with self.catalog.connection() as connection:
             rows = connection.execute(
-                "SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence", (run_id,)
+                "SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence "
+                + ("DESC LIMIT ?" if limit is not None else "ASC"),
+                (run_id, limit) if limit is not None else (run_id,),
             ).fetchall()
+        if limit is not None:
+            rows = list(reversed(rows))
         return tuple(
             {
                 "run_id": row["run_id"],

@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 from autoanalyst import __version__
-from autoanalyst.bootstrap import build_runtime
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -24,6 +22,12 @@ def main(argv: list[str] | None = None) -> int:
         sys.argv = ["autoanalyst-worker", *args[2:]]
         return worker_main()
 
+    if args[:2] == ["-m", "autoanalyst.execution.data_worker"]:
+        from autoanalyst.execution.data_worker import main as data_worker_main
+
+        sys.argv = ["autoanalyst-data-worker", *args[2:]]
+        return data_worker_main()
+
     parser = argparse.ArgumentParser(prog="AutoAnalyst")
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--self-test", action="store_true")
@@ -37,36 +41,18 @@ def main(argv: list[str] | None = None) -> int:
 
         if not callable(ui_main):
             raise RuntimeError("Bundled V2 UI entry point is unavailable")
-        _bundled_file("app.py")
-        worker_probe = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "autoanalyst.execution.worker",
-                "--help",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-        if worker_probe.returncode != 0:
-            raise RuntimeError(
-                "Bundled worker dispatcher failed self-test: " + worker_probe.stderr[-1000:]
-            )
+        _streamlit_entrypoint()
 
         with tempfile.TemporaryDirectory(prefix="autoanalyst-selftest-") as root:
-            runtime = build_runtime(Path(root))
-            if not runtime.catalog.paths.catalog.is_file():
-                raise RuntimeError("Self-test workspace catalog was not created")
-            if not runtime.registry.module_ids:
-                raise RuntimeError("Self-test analysis registry is empty")
+            from autoanalyst.smoke import verify_workspace_journey
+
+            verify_workspace_journey(Path(root))
         print(f"AutoAnalyst {__version__} self-test OK")
         return 0
 
     from streamlit.web import bootstrap
 
-    app_path = _bundled_file("app.py")
+    app_path = _streamlit_entrypoint()
     bootstrap.run(
         str(app_path),
         False,
@@ -80,14 +66,14 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _bundled_file(name: str) -> Path:
+def _streamlit_entrypoint() -> Path:
     bundle_root = getattr(sys, "_MEIPASS", None)
     if bundle_root is not None:
-        candidate = Path(bundle_root) / name
+        candidate = Path(bundle_root) / "autoanalyst" / "ui" / "entrypoint.py"
     else:
-        candidate = Path(__file__).resolve().parents[2] / name
+        candidate = Path(__file__).resolve().parent / "ui" / "entrypoint.py"
     if not candidate.is_file():
-        raise FileNotFoundError(f"Bundled AutoAnalyst file is missing: {name}")
+        raise FileNotFoundError("AutoAnalyst Streamlit entry point is missing")
     return candidate
 
 

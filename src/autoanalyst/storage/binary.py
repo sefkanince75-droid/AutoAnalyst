@@ -56,6 +56,14 @@ def holdout_selection_hash(training_run_id: str, provenance: Mapping[str, object
             "threshold": recommendation["threshold"],
             "model_sha256": model_meta["sha256"],
             "split_sha256": split_meta["sha256"],
+            **(
+                {
+                    "model_task": provenance.get("model_task"),
+                    "class_labels": provenance.get("class_labels"),
+                }
+                if "model_task" in provenance
+                else {}
+            ),
         }
     )
 

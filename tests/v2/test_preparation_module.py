@@ -16,13 +16,15 @@ class _Event:
         return False
 
 
-def test_registry_contains_exactly_the_four_closed_v2_modules(phase3_workspace) -> None:
+def test_registry_contains_exactly_the_six_closed_v2_modules(phase3_workspace) -> None:
     registry = build_registry(phase3_workspace.catalog, phase3_workspace.store)
     assert registry.module_ids == (
         "binary_classification",
         "comparison",
+        "multiclass_classification",
         "preparation",
         "profiling",
+        "regression",
     )
 
 

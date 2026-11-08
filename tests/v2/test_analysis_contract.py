@@ -60,12 +60,14 @@ class CancellationState:
         return self.cancelled
 
 
-def test_registry_is_closed_to_the_four_v2_module_ids() -> None:
+def test_registry_is_closed_to_the_six_v2_module_ids() -> None:
     assert ALLOWED_MODULE_IDS == {
         "profiling",
         "preparation",
         "comparison",
         "binary_classification",
+        "regression",
+        "multiclass_classification",
     }
     registry = AnalysisRegistry([StubModule(AnalysisModuleId.PROFILING)])
     assert registry.module_ids == ("profiling",)

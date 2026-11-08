@@ -1,36 +1,21 @@
-name: Refresh dependency lock
+name: Verify dependency lock (manual)
 
 on:
-  push:
-    branches: [v2-completion]
-    paths: [pyproject.toml]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   lock:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: v2-completion
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.8.22"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Generate frozen dependency graph
-        run: uv lock --python 3.12
-      - name: Commit lockfile when changed
-        run: |
-          if [ -z "$(git status --porcelain -- uv.lock)" ]; then
-            echo "uv.lock already current"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add uv.lock
-          git commit -m "build(v2): refresh uv dependency lock"
-          git push origin HEAD:v2-completion
+      - name: Verify committed dependency graph without changing the repository
+        run: uv lock --check --python 3.12

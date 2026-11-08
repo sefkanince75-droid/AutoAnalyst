@@ -18,6 +18,7 @@ from ..domain.errors import (
     AutoAnalystError,
     CancellationError,
     ResourceError,
+    SchemaError,
     UnexpectedExecutionError,
 )
 from ..domain.plans import AnalysisModuleId, AnalysisSpec
@@ -199,7 +200,12 @@ class ExecutionCoordinator:
     def _start_final_holdout_access(self, spec: AnalysisSpec, final_run_id: str) -> str | None:
         """Write the irreversible final-selection lock before any test membership is read."""
         if (
-            spec.module_id is not AnalysisModuleId.BINARY_CLASSIFICATION
+            spec.module_id
+            not in {
+                AnalysisModuleId.BINARY_CLASSIFICATION,
+                AnalysisModuleId.REGRESSION,
+                AnalysisModuleId.MULTICLASS_CLASSIFICATION,
+            }
             or spec.operation != "final_evaluate"
         ):
             return None
@@ -207,6 +213,15 @@ class ExecutionCoordinator:
         training_result = self.store.result_for_run(training_run_id)
         if training_result is None:
             return None
+        original_run = self.store.get_run(training_run_id)
+        original_spec = self.store.get_spec(original_run.spec_id)
+        if (
+            original_run.project_id != spec.project_id
+            or original_spec.module_id != spec.module_id
+            or original_spec.input_version_id != spec.input_version_id
+            or original_spec.operation != "train_validate"
+        ):
+            raise SchemaError({"reason": "binary.audit_context"})
         selection_hash = holdout_selection_hash(training_run_id, training_result.provenance)
         BinaryStore(self.store.catalog).start_holdout_access(
             training_run_id, final_run_id, selection_hash
@@ -250,12 +265,11 @@ class ExecutionCoordinator:
         workspace_path = Path(workspace).resolve()
         reconcile_interrupted_runs(self.store, workspace_path)
         clear_stale_lease(workspace_path)
-        reserve_worker(workspace_path, run_id)
         self._cancel_path(run_id, workspace_path).unlink(missing_ok=True)
         spec = self.store.get_spec(run.spec_id)
-        running: AnalysisRun | None = None
         try:
-            running = self.store.transition(run_id, status=RunStatus.RUNNING)
+            reserve_worker(workspace_path, run_id)
+            self.store.transition(run_id, status=RunStatus.RUNNING)
             self.store.append_event(run_id, EventKind.STARTED.value, stage="worker")
             self._start_final_holdout_access(spec, run_id)
             command = [
@@ -283,17 +297,16 @@ class ExecutionCoordinator:
             return process
         except Exception as exc:
             release_worker(workspace_path, run_id)
-            if running is not None:
-                current = self.store.get_run(run_id)
-                if current.status is RunStatus.RUNNING:
-                    code = exc.code.value if isinstance(exc, AutoAnalystError) else "resource_error"
-                    self.store.transition(run_id, status=RunStatus.FAILED, error_code=code)
-                    self.store.append_event(
-                        run_id,
-                        EventKind.FAILED.value,
-                        stage="worker_start",
-                        payload={"error_code": code, "exception_type": type(exc).__name__},
-                    )
+            current = self.store.get_run(run_id)
+            if current.status in {RunStatus.PENDING, RunStatus.RUNNING}:
+                code = exc.code.value if isinstance(exc, AutoAnalystError) else "resource_error"
+                self.store.transition(run_id, status=RunStatus.FAILED, error_code=code)
+                self.store.append_event(
+                    run_id,
+                    EventKind.FAILED.value,
+                    stage="worker_start",
+                    payload={"error_code": code, "exception_type": type(exc).__name__},
+                )
             if isinstance(exc, AutoAnalystError):
                 raise
             raise ResourceError(
