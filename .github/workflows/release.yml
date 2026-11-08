@@ -30,6 +30,8 @@ jobs:
           python-version: "3.12"
       - name: Sync frozen release environment
         run: uv sync --frozen --group dev --group desktop
+      - name: Install browser for real UI startup validation
+        run: uv run --frozen playwright install chromium
       - name: Full regression suite
         run: uv run pytest -q
       - name: Build wheel and source distribution
@@ -54,6 +56,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\dist\AutoAnalyst.exe --self-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Real executable HTTP assets websocket and browser validation
+        run: uv run --frozen python tools/check_startup.py --executable dist/AutoAnalyst.exe --output build/startup-check.json --screenshot build/startup-ui.png
       - name: Create portable archive
         shell: pwsh
         run: >-

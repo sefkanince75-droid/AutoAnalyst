@@ -28,6 +28,7 @@ uv lock --check
 uv run --frozen ruff check src/autoanalyst tests/v2 tools
 uv run --frozen ruff format --check src/autoanalyst tests/v2 tools
 uv run --frozen mypy src/autoanalyst/domain src/autoanalyst/analyses/contract.py src/autoanalyst/application src/autoanalyst/execution/protocol.py
+uv run --frozen playwright install chromium
 uv run --frozen pytest -q
 uv run --frozen python -m autoanalyst.desktop --self-test
 ```
@@ -223,3 +224,19 @@ Araç yalnızca kendisinin oluşturduğu özel geçici workspace'leri kullanır;
 - `reporting/binary_formats.py` uses Matplotlib PDF backend and openpyxl, with no new runtime dependency. Charts consume the same validated saved bins as HTML, not source datasets. PDF pages have bounded monospaced wrapping, Turkish font support, page numbers and explicit record/cell truncation. XLSX stores every saved result table, source-table references and embedded PNG charts; formula-like text is forced to string cells. Excel limits fail explicitly. XLSX export additionally caps aggregate saved table/metric cells at 500,000 and charts at 50 before Workbook allocation; use CSV/JSON for larger results. PDF checks a 1M-character section budget before wrapping. Binary containers can include timestamps; persisted report caching returns identical saved bytes after reopening. Template presentation-5 invalidates only new rendering cache keys.
 
 Primary API references: [scikit-learn calibration](https://scikit-learn.org/stable/modules/calibration.html), [Ollama chat](https://docs.ollama.com/api/chat). These document provider/library behavior; they are not evidence of a live external integration test.
+
+
+## Windows başlangıcı: üretim frontend'i
+
+V2 doğrudan `bootstrap.run` çağırır. Bu API flag_options değerlerini ilk açılışta kendiliğinden yüklemez; `bootstrap.load_config_options` önce çağrılmalıdır. PyInstaller yolları site-packages içermediğinden Streamlit varsayılanı developmentMode=true olabilir; 3000 frontend'i bekler ve Python sunucusu HTML sunmaz. Launcher üretim modunu, loopback adresini, browser/server portunu ve boş base path'i tek konfigürasyonda yükler. İzleyici kapalıdır; browser URL'si Streamlit'in kendi resolver'ından alınır.
+
+`tools/check_startup.py` varsayılan olarak normal source launcher'ını, `--executable` verilirse gerçek EXE'yi başlatır. CWD ve AUTOANALYST_WORKSPACE ayrı geçici dizindir. Yalnızca kendi sunucusunu durdurur; varsayılan tarayıcı süreçlerini sonlandırmaz. HTTP health yanında root HTML, JS/CSS MIME/bütünlüğü, WebSocket origin/portu, uygulama başlığı, script bitişi ve sentetik örnek veri ekranı denetlenir. Uzak HTTP istekleri test tarayıcısında engellenir. Hostile config ve dolu port iki gerçek tarayıcı regresyon senaryosudur.
+
+Windows psutil bazı uvicorn TCP endpoint'lerini LISTEN yerine NONE olarak raporlayabilir. Doğrulayıcı sahipliği PID ailesi ve yerel adres/port üzerinden kontrol edip gerçek HTTP erişimini ayrıca doğrular; kullanıcı workspace'ine yazmadan önce özel test kataloğunun oluşmasını ister.
+
+```powershell
+uv run --frozen playwright install chromium
+uv run --frozen python tools/check_startup.py --executable dist/AutoAnalyst.exe --output build/startup-check.json --screenshot build/startup-ui.png
+```
+
+CI Linux'ta browser sistem bağımlılıklarını da `playwright install --with-deps chromium` ile kurar. Bu araç uygulamanın runtime bağımlılığı değildir. Gerçek kurulu EXE ve masaüstü kısayolu testlerin kapsamı dışındadır; değiştirilmez.

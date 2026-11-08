@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import socket
 import sys
 import tempfile
 from pathlib import Path
@@ -31,7 +32,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="AutoAnalyst")
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8501,
+        help="Preferred loopback port; 0 selects an available port",
+    )
+    parser.add_argument(
+        "--no-browser", action="store_true", help="Serve the UI without opening a browser"
+    )
     parsed = parser.parse_args(args)
+    if not 0 <= parsed.port <= 65535:
+        parser.error("--port must be between 0 and 65535")
 
     if parsed.version:
         print(__version__)
@@ -51,19 +63,43 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     from streamlit.web import bootstrap
+    from streamlit.web.server import server_util
 
     app_path = _streamlit_entrypoint()
-    bootstrap.run(
-        str(app_path),
-        False,
-        [],
-        {
-            "server.headless": False,
-            "server.maxUploadSize": 256,
-            "browser.gatherUsageStats": False,
-        },
-    )
+    port = _select_loopback_port(parsed.port)
+    options = {
+        # Frozen Streamlit paths contain no site-packages component, which would
+        # otherwise enable its Vite development frontend (port 3000, no static UI).
+        "global.developmentMode": False,
+        "server.address": "127.0.0.1",
+        "server.port": port,
+        "browser.serverAddress": "127.0.0.1",
+        "browser.serverPort": port,
+        "server.baseUrlPath": "",
+        "server.headless": parsed.no_browser,
+        "server.fileWatcherType": "none",
+        "server.runOnSave": False,
+        "server.maxUploadSize": 256,
+        "browser.gatherUsageStats": False,
+    }
+    # bootstrap.run does not apply flag_options initially. The Streamlit CLI
+    # calls this first; without it these flags only take effect on config reload.
+    bootstrap.load_config_options(options)
+    # Use the same resolver as Streamlit's real browser-opening callback.
+    print(f"AutoAnalyst URL: {server_util.get_url('127.0.0.1')}", flush=True)
+    bootstrap.run(str(app_path), False, [], options)
     return 0
+
+
+def _select_loopback_port(preferred: int) -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("127.0.0.1", preferred))
+        except OSError:
+            if preferred == 0:
+                raise
+            probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
 
 
 def _streamlit_entrypoint() -> Path:

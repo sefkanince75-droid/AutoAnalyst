@@ -34,6 +34,8 @@ jobs:
         run: uv lock --check
       - name: Sync development environment
         run: uv sync --frozen --group dev
+      - name: Install browser for real UI startup regression tests
+        run: uv run --frozen playwright install --with-deps chromium
       - name: Ruff lint
         if: runner.os == 'Linux'
         run: uv run ruff check src/autoanalyst tests/v2 tools
