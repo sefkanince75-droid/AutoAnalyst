@@ -14,6 +14,7 @@ from .data import CSVIngestor
 from .domain.codec import fingerprint, utc_now
 from .domain.plans import AnalysisModuleId, AnalysisSpec, ResourceBudget
 from .domain.runs import RunStatus
+from .localization import I18N
 from .reporting import ReportService
 from .reporting.charts import chart_views
 
@@ -80,7 +81,12 @@ def verify_workspace_journey(workspace: Path) -> None:
         exported_bytes = reports.artifact_bytes(exported_report)
         if fmt == "pdf" and not exported_bytes.startswith(b"%PDF-"):
             raise RuntimeError("Self-test PDF is invalid")
-        if fmt == "xlsx" and not load_workbook(io.BytesIO(exported_bytes))["Table_1"].max_row:
+        if (
+            fmt == "xlsx"
+            and not load_workbook(io.BytesIO(exported_bytes))[
+                f"{I18N['tr']['sheet_table']}_1"
+            ].max_row
+        ):
             raise RuntimeError("Self-test XLSX is invalid")
 
     final = build_runtime(workspace)

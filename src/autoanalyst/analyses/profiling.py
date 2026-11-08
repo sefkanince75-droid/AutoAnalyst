@@ -151,7 +151,12 @@ class ProfilingModule:
                 )
             if len(series) and distinct / max(1, len(non_null)) >= 0.95 and distinct >= 10:
                 findings.append(
-                    _finding("profiling.high_cardinality", FindingSeverity.INFO, meta["column_id"])
+                    _finding(
+                        "profiling.high_cardinality",
+                        FindingSeverity.INFO,
+                        meta["column_id"],
+                        {"column_name": str(display_name)},
+                    )
                 )
             if non_finite:
                 findings.append(

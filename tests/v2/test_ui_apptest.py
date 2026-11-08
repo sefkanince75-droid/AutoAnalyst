@@ -95,8 +95,11 @@ def _app():
 
 
 def _select(app, label, option):
-    selector = next(item for item in app.selectbox if item.label == label)
-    selector.select_index(selector.options.index(option)).run(timeout=30)
+    selector = next((item for item in app.selectbox if item.label == label), None)
+    if selector is not None:
+        selector.select_index(selector.options.index(option)).run(timeout=30)
+    else:
+        next(item for item in app.radio if item.label == label).set_value(option).run(timeout=30)
     assert not app.exception
 
 
@@ -1597,3 +1600,51 @@ def test_isolated_preparation_ui_keeps_apply_explicit_and_invalidates_stale_cont
         2
     ).run(timeout=30)
     assert not app.exception and "preview_id" not in app.session_state
+
+
+def test_empty_project_and_dataset_names_cannot_be_submitted(ui_workspace):
+    app = _app()
+    assert app.button(key="create_project").disabled
+    assert app.button(key="create_dataset").disabled
+
+
+def test_prepared_training_is_blocked_before_worker_launch(ui_workspace):
+    ws = ui_workspace
+    column = next(
+        row
+        for row in ws.runtime.catalog.list_columns(ws.first_import.version.version_id)
+        if row["display_name"] == "value"
+    )
+    service = PreparationService(ws.runtime.catalog, ws.runtime.artifact_store)
+    recipe = service.create_recipe(
+        project_id=ws.project.project_id,
+        base_version_id=ws.first_import.version.version_id,
+        steps=[
+            {
+                "operation": "fill_missing",
+                "parameters": {"column_ids": [column["column_id"]], "strategy": "median"},
+            }
+        ],
+    )
+    preview = service.preview_recipe(recipe.recipe_id)
+    service.apply_preview(preview.preview_id)
+    app = _app()
+    app.selectbox(key="analysis_task").select("Binary classification").run(timeout=30)
+    app.selectbox(key="binary_target").select("group").run(timeout=30)
+    app.multiselect(key="binary_features").select("value").run(timeout=30)
+    assert not app.exception
+    assert app.button(key="run_binary").disabled
+    assert any("preparation learned from all rows" in item.value for item in app.warning)
+    assert not ws.runtime.run_store.list_runs(ws.project.project_id)
+
+
+def test_selected_tab_survives_rerender_and_completion_can_navigate(ui_workspace):
+    app = _app()
+    app.session_state["workspace_tab"] = "Analysis"
+    app.run(timeout=30)
+    assert not app.exception
+    assert app.session_state["workspace_tab"] == "Analysis"
+    app.session_state["pending_workspace_tab"] = "results"
+    app.run(timeout=30)
+    assert not app.exception
+    assert app.session_state["workspace_tab"] == "Results"

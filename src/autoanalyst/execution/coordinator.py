@@ -175,7 +175,10 @@ class ExecutionCoordinator:
                     run_id,
                     EventKind.FAILED.value,
                     stage="run",
-                    payload={"error_code": exc.code.value},
+                    payload={
+                        "error_code": exc.code.value,
+                        "reason": str(exc.context.get("reason", "")),
+                    },
                 )
             raise
         except Exception as exc:

@@ -12,7 +12,7 @@ from openpyxl.utils.exceptions import IllegalCharacterError
 
 from ..domain.codec import canonical_json, to_primitive
 from ..domain.errors import ResourceError, SchemaError
-from ..localization import I18N, cell_text, finding_text, label
+from ..localization import I18N, cell_text, label, result_finding_text
 from .charts import _bins, chart_views, table_title
 from .summary import result_summary
 
@@ -53,7 +53,7 @@ def _overview(result, language):
         t["report_title"],
         f"{t['module']}: {label(result.module_id.value, language)}",
         f"{t['outcome']}: {label(result.outcome.value, language)}",
-        f"Result: {result.result_id}",
+        f"{label('result_id', language)}: {result.result_id}",
         "",
         *overview.lines,
         overview.scope,
@@ -65,7 +65,7 @@ def _overview(result, language):
         ),
         "",
         t["findings"],
-        *(finding_text(f.code, language, f.parameters) for f in result.findings),
+        *(result_finding_text(result, f, language) for f in result.findings),
     ]
 
 
@@ -108,37 +108,66 @@ def _pdf(result, language):
                 figure.clear()
 
         page(_overview(result, language))
+        # Two charts per A4 page, preserving each plot's original aspect ratio.
+        from matplotlib.image import imread
+
+        canvas = None
+        slot = 0
         for view, figure in chart_figures(result, language):
             if figure is None:
                 page([view.title, view.notice])
-            else:
+                continue
+            if canvas is None:
+                canvas = Figure(figsize=(8.27, 11.69))
+                canvas.text(0.08, 0.95, I18N[language]["charts"], size=16)
+            image = io.BytesIO()
+            figure.savefig(image, format="png", dpi=140)
+            figure.clear()
+            image.seek(0)
+            axis = canvas.add_axes((0.07, 0.53 if slot == 0 else 0.11, 0.86, 0.35))
+            axis.imshow(imread(image, format="png"))
+            axis.axis("off")
+            slot += 1
+            if slot == 2:
                 page_number += 1
                 if page_number > 250:
                     raise ResourceError({"reason": "report_page_limit"})
-                figure.text(0.99, 0.005, str(page_number), ha="right", size=8)
-                pdf.savefig(figure)
-                figure.clear()
+                canvas.text(0.9, 0.035, str(page_number), ha="right", size=9)
+                pdf.savefig(canvas)
+                canvas.clear()
+                canvas, slot = None, 0
+        if canvas is not None:
+            page_number += 1
+            if page_number > 250:
+                raise ResourceError({"reason": "report_page_limit"})
+            canvas.text(0.9, 0.035, str(page_number), ha="right", size=9)
+            pdf.savefig(canvas)
+            canvas.clear()
+        lines = []
         for index, table in enumerate(result.tables, 1):
-            lines = [table_title(table, index, language), f"ID: {table.table_id}"]
-            # Vertical records remain legible even for wide tables or long user text.
+            # The plotted bin values remain available in full machine/table exports.
+            if {"bin_left", "bin_right", "count"}.issubset(table.columns):
+                continue
+            lines.extend(["", table_title(table, index, language)])
+            selected = [i for i, column in enumerate(table.columns) if column not in {"column_id"}]
             for row_index, row in enumerate(table.rows[:100], 1):
-                lines.append(f"[{row_index}]")
-                for column, value in zip(table.columns, row, strict=True):
-                    text = str(cell_text(value, column, language))
-                    lines.append(
-                        f"{label(column, language)}: {text[:500]}"
-                        + (" […]" if len(text) > 500 else "")
+                values = []
+                for i in selected:
+                    column, value = table.columns[i], row[i]
+                    text = (
+                        format(value, ".6g")
+                        if isinstance(value, float)
+                        else str(cell_text(value, column, language))
                     )
+                    values.append(
+                        f"{label(column, language)}: {text[:120]}"
+                        + (" […]" if len(text) > 120 else "")
+                    )
+                lines.append(f"[{row_index}] " + " | ".join(values))
             if len(table.rows) > 100:
                 lines.append(I18N[language]["first_rows"].format(limit=100))
-            lines.append(
-                "PDF: tablo başına 100 satır, hücre başına 500 karakter. Tam kayıtlı tablolar: XLSX / CSV / JSON."
-                if language == "tr"
-                else "PDF: 100 rows/table, 500 characters/cell. Full saved tables: XLSX / CSV / JSON."
-            )
-            page(lines)
-        for key, value in (("methodology", result.methodology), ("provenance", result.provenance)):
-            page([I18N[language][key], canonical_json(to_primitive(value))])
+        lines.extend(["", I18N[language]["technical_appendix_hint"]])
+        page(lines)
     return output.getvalue()
 
 
@@ -175,9 +204,9 @@ def _xlsx(result, language):
             )
         return ws
 
-    sheet("Overview", ((line,) for line in _overview(result, language)))
+    sheet(I18N[language]["sheet_overview"], ((line,) for line in _overview(result, language)))
     sheet(
-        "Metrics",
+        I18N[language]["sheet_metrics"],
         [
             ("name", "value", "state", "sample_size", "interval", "dimensions"),
             *(
@@ -194,7 +223,7 @@ def _xlsx(result, language):
         ],
     )
     sheet(
-        "Metadata",
+        I18N[language]["sheet_metadata"],
         [
             ("key", "value"),
             ("result_id", result.result_id),
@@ -203,10 +232,21 @@ def _xlsx(result, language):
         ],
     )
     for index, table in enumerate(result.tables, 1):
-        sheet(f"Table_{index}", (row for row in (table.columns, *table.rows)))
+        sheet(
+            f"{I18N[language]['sheet_table']}_{index}",
+            (row for row in (table.columns, *table.rows)),
+        )
     images = []
     for index, (view, figure) in enumerate(chart_figures(result, language), 1):
-        ws = sheet(f"Chart_{index}", [(view.title,), (f"Source: {view.table_id}",)])
+        source_index = next(
+            (i for i, table in enumerate(result.tables, 1) if table.table_id == view.table_id), None
+        )
+        source_text = (
+            I18N[language]["chart_source"].format(index=source_index)
+            if source_index is not None
+            else I18N[language]["chart_missing_table"]
+        )
+        ws = sheet(f"{I18N[language]['sheet_chart']}_{index}", [(view.title,), (source_text,)])
         if figure is None:
             ws.cell(3, 1, view.notice)
         else:

@@ -54,7 +54,7 @@ def render_workspace_backups(runtime, language):
     root = runtime.catalog.paths.root
     service = WorkspaceSnapshotService(runtime.catalog, runtime.artifact_store)
     active = bool(runtime.run_store.active_analysis_runs() or active_data_task(root))
-    with st.sidebar.expander(t["workspace_backups"]):
+    with st.expander(t["workspace_backups"]):
         st.caption(t["current_workspace"])
         st.text(str(root))
         if message := st.session_state.pop("workspace_open_error", None):

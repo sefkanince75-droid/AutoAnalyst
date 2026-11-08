@@ -277,6 +277,48 @@ def test_scoring_requires_finalized_model_and_complete_mapping(tmp_path):
     assert len(scoring_result.tables[0].rows) == imported.version.row_count
     assert scoring_result.provenance["final_run_id"] == final_run.run_id
 
+    # Business identifiers must travel alongside the exact persisted row/score.
+    from dataclasses import replace
+
+    from autoanalyst.data import TableAccess
+
+    parameters = dict(scoring_spec.parameters)
+    parameters["identifier_column_ids"] = (
+        str(columns["x"]["column_id"]),
+        str(columns["cat"]["column_id"]),
+    )
+    identified_spec = replace(
+        scoring_spec, spec_id=str(uuid4()), parameters=parameters, spec_hash=fingerprint(parameters)
+    )
+    identified = coordinator.create_run(identified_spec, request_key="score-with-identifiers")
+    coordinator.execute_inline(identified.run_id, module, cancellation_event=_Event())
+    identified_result = run_store.result_for_run(identified.run_id)
+    actual = identified_result.tables[0]
+    assert actual.columns == (
+        "row_id",
+        "score_positive",
+        "predicted_label",
+        "input: x",
+        "input: cat",
+    )
+    frame = (
+        TableAccess(catalog, store)
+        .selected_columns(imported.version.version_id, tuple(parameters["identifier_column_ids"]))
+        .to_pandas()
+    )
+    assert [row[3:] for row in actual.rows] == list(frame.itertuples(index=False, name=None))
+    assert [row[:3] for row in actual.rows] == list(scoring_result.tables[0].rows)
+    for identifiers in ((str(uuid4()),), (str(columns["x"]["column_id"]),) * 2):
+        invalid = replace(
+            scoring_spec,
+            spec_id=str(uuid4()),
+            parameters={**parameters, "identifier_column_ids": identifiers},
+            spec_hash=fingerprint({**parameters, "identifier_column_ids": identifiers}),
+        )
+        failed = coordinator.create_run(invalid, request_key=str(uuid4()))
+        with pytest.raises(SchemaError, match="schema_error"):
+            coordinator.execute_inline(failed.run_id, module, cancellation_event=_Event())
+
 
 def test_scoring_rejects_incompatible_physical_type(tmp_path):
     catalog, store, project, imported, columns = _workspace(tmp_path)

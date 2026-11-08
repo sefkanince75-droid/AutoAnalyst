@@ -45,7 +45,9 @@ def test_native_check_verifies_rendered_ui_and_closes_window(monkeypatch, error)
             pass
 
     monkeypatch.setitem(
-        sys.modules, "webview", SimpleNamespace(create_window=lambda *a, **k: window, start=start)
+        sys.modules,
+        "webview",
+        SimpleNamespace(settings={}, create_window=lambda *a, **k: window, start=start),
     )
     if error:
         with pytest.raises(RuntimeError, match="did not render"):
@@ -53,6 +55,7 @@ def test_native_check_verifies_rendered_ui_and_closes_window(monkeypatch, error)
     else:
         native.show_window("http://127.0.0.1:1234", check=True)
     assert calls == ["closed"]
+    assert sys.modules["webview"].settings["ALLOW_DOWNLOADS"] is True
 
 
 def test_server_cleanup_runs_when_window_fails(tmp_path, monkeypatch):
@@ -99,6 +102,41 @@ def test_readiness_detects_server_crash_without_opening_window():
 
 
 def test_missing_native_window_returns_an_actionable_failure(monkeypatch):
-    monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(create_window=lambda *a, **k: None))
+    monkeypatch.setitem(
+        sys.modules, "webview", SimpleNamespace(settings={}, create_window=lambda *a, **k: None)
+    )
     with pytest.raises(RuntimeError, match="could not be created"):
         native.show_window("http://127.0.0.1:1234")
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_native_startup_displays_progress_then_navigates_or_reports_failure(monkeypatch, fails):
+    calls = []
+    window = SimpleNamespace(
+        load_url=lambda url: calls.append("navigate"), destroy=lambda: calls.append("closed")
+    )
+
+    def create(*args, **kwargs):
+        assert args[1] is None
+        assert "<progress" in kwargs["html"]
+        calls.append("window")
+        return window
+
+    def wait(*args):
+        calls.append("ready")
+        if fails:
+            raise TimeoutError("not ready")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "webview",
+        SimpleNamespace(settings={}, create_window=create, start=lambda callback, **kw: callback()),
+    )
+    monkeypatch.setattr(native, "wait_for_ui", wait)
+    if fails:
+        with pytest.raises(RuntimeError, match="failed during startup"):
+            native.show_window("http://127.0.0.1:1234", process=object())
+        assert calls == ["window", "ready", "closed"]
+    else:
+        native.show_window("http://127.0.0.1:1234", process=object())
+        assert calls == ["window", "ready", "navigate"]

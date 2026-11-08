@@ -564,7 +564,20 @@ class BinaryClassificationModule:
             row for row in scoring_metadata.values() if row["physical_name"] == INTERNAL_ROW_ID
         )
         row_id_col = str(system_row["column_id"])
-        frame = self._load_as_ids(spec.input_version_id, (row_id_col, *scoring_ids))
+        identifier_ids = tuple(
+            str(value) for value in spec.parameters.get("identifier_column_ids", ())
+        )
+        if (
+            len(identifier_ids) > 20
+            or len(set(identifier_ids)) != len(identifier_ids)
+            or any(
+                value not in scoring_metadata or scoring_metadata[value]["is_system"]
+                for value in identifier_ids
+            )
+        ):
+            raise SchemaError({"reason": "binary.scoring_identifiers_invalid"})
+        selected_ids = tuple(dict.fromkeys((row_id_col, *scoring_ids, *identifier_ids)))
+        frame = self._load_as_ids(spec.input_version_id, selected_ids)
         remapped = pd.DataFrame(
             {
                 training: frame[scoring]
@@ -588,10 +601,25 @@ class BinaryClassificationModule:
         labels = [positive if score >= threshold else negative for score in scores]
         table = ResultTable(
             str(uuid4()),
-            ("row_id", "score_positive", "predicted_label"),
+            (
+                "row_id",
+                "score_positive",
+                "predicted_label",
+                *(
+                    "input: " + str(scoring_metadata[value]["display_name"])
+                    for value in identifier_ids
+                ),
+            ),
             tuple(
-                (str(row_id), float(score), _py(label))
-                for row_id, score, label in zip(frame[row_id_col], scores, labels, strict=True)
+                (
+                    str(row_id),
+                    float(score),
+                    _py(label),
+                    *(_identifier_value(frame[value].iloc[index]) for value in identifier_ids),
+                )
+                for index, (row_id, score, label) in enumerate(
+                    zip(frame[row_id_col], scores, labels, strict=True)
+                )
             ),
         )
         return ResultDraft(
@@ -613,6 +641,7 @@ class BinaryClassificationModule:
                 "model_id": recommendation["model_id"],
                 "threshold": threshold,
                 "feature_mapping": mapping,
+                "identifier_column_ids": identifier_ids,
             },
         )
 
@@ -752,6 +781,15 @@ def _py(value):
     if isinstance(value, np.generic):
         return value.item()
     return value
+
+
+def _identifier_value(value):
+    if pd.isna(value):
+        return None
+    value = _py(value)
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
 def _decode_label(payload):

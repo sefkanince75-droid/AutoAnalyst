@@ -87,15 +87,29 @@ def hide_owned_console() -> None:
         pass
 
 
-def show_window(url: str, *, check: bool = False) -> None:
+def show_window(url: str, *, check: bool = False, process=None) -> None:
     import webview
 
+    # WebView2 otherwise silently cancels Streamlit's report/data downloads.
+    webview.settings["ALLOW_DOWNLOADS"] = True
     window = webview.create_window(
-        f"AutoAnalyst V2 · {__version__}", url, width=1280, height=850, min_size=(900, 600)
+        f"AutoAnalyst V2 · {__version__}",
+        url if process is None else None,
+        html=None
+        if process is None
+        else """<!doctype html><html lang="tr"><meta charset="utf-8">
+        <style>body{background:#0e1117;color:#fafafa;font:18px system-ui;display:grid;
+        place-content:center;height:90vh;text-align:center}progress{width:280px;margin:auto}</style>
+        <h1>AutoAnalyst V2</h1><p>Uygulama hazırlanıyor / Starting the application…</p>
+        <progress aria-label="Uygulama hazırlanıyor"></progress></html>""",
+        width=1280,
+        height=850,
+        min_size=(900, 600),
     )
     if window is None:
         raise RuntimeError("Native desktop window could not be created")
     result = {"loaded": False}
+    startup_errors = []
 
     def verify():
         try:
@@ -119,7 +133,26 @@ def show_window(url: str, *, check: bool = False) -> None:
         finally:
             window.destroy()
 
-    webview.start(verify if check else None, gui="edgechromium", private_mode=True, debug=False)
+    def ready():
+        if process is not None:
+            try:
+                wait_for_ui(process, url)
+                window.load_url(url)
+            except Exception as exc:
+                startup_errors.append(exc)
+                window.destroy()
+                return
+        if check:
+            verify()
+
+    webview.start(
+        ready if check or process is not None else None,
+        gui="edgechromium",
+        private_mode=True,
+        debug=False,
+    )
+    if startup_errors:
+        raise RuntimeError("Desktop server failed during startup") from startup_errors[0]
     if check and not result["loaded"]:
         raise RuntimeError("Desktop window did not render the application")
 
@@ -150,8 +183,7 @@ def launch(port: int, *, check: bool = False) -> int:
                 stderr=output,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-            wait_for_ui(process, url)
-            show_window(url, check=check)
+            show_window(url, check=check, process=process)
         if check:
             print(
                 json.dumps(

@@ -30,6 +30,8 @@ def render_preparation_panel(
 ) -> None:
     t = I18N[language]
     st.subheader(t["prepare"])
+    if st.session_state.pop("preparation_applied", False):
+        st.success(t["preparation_applied_notice"])
     service = PreparationService(runtime.catalog, runtime.artifact_store)
     base = runtime.catalog.get_version(version_id)
     dataset = runtime.catalog.get_dataset(base.dataset_id)
@@ -71,6 +73,7 @@ def render_preparation_panel(
             if st.button(t["cancel_step_edit"], key="cancel_step_edit"):
                 st.session_state.pop("prep_edit_uid", None)
                 clear_preview()
+                st.session_state.preparation_applied = True
                 st.rerun()
     by_name = {str(row["display_name"]): str(row["column_id"]) for row in columns}
     operation = st.selectbox(

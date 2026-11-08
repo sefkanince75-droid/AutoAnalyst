@@ -13,7 +13,7 @@ from .. import __version__
 from ..domain.codec import canonical_json, fingerprint, to_primitive, utc_now
 from ..domain.errors import DataError, SchemaError
 from ..domain.results import AnalysisResult, Report
-from ..localization import I18N, cell_text, finding_text, label
+from ..localization import I18N, cell_text, label, result_finding_text
 from ..storage.activity import artifact_activity
 from ..storage.artifacts import ArtifactStore
 from ..storage.runs import RunStore
@@ -21,7 +21,7 @@ from ..storage.sqlite import SQLiteCatalog
 from .charts import chart_views, summary_metrics, table_title
 from .summary import result_summary
 
-TEMPLATE_VERSION = f"{__version__}/presentation-5"
+TEMPLATE_VERSION = f"{__version__}/presentation-6"
 SUPPORTED_FORMATS = {"html", "markdown", "json", "csv", "pdf", "xlsx"}
 
 
@@ -170,7 +170,7 @@ def _html(result: AnalysisResult, language: str) -> str:
         for m in result.metrics
     )
     findings = "".join(
-        f"<li>{escape(finding_text(f.code, language, f.parameters))}</li>" for f in result.findings
+        f"<li>{escape(result_finding_text(result, f, language))}</li>" for f in result.findings
     )
     tables = "".join(
         _html_table(table, language, index) for index, table in enumerate(result.tables, 1)
@@ -266,7 +266,7 @@ def _markdown(result: AnalysisResult, language: str) -> str:
             f"| {_md_cell(label(metric.name, language))} | {_md_cell(_metric_text(metric, language))} | {_md_cell(dims)} |"
         )
     lines += ["", f"## {t['findings']}", ""]
-    lines.extend("- " + finding_text(f.code, language, f.parameters) for f in result.findings)
+    lines.extend("- " + result_finding_text(result, f, language) for f in result.findings)
     for table in result.tables:
         lines += [
             "",
@@ -350,7 +350,9 @@ def _csv_safe(value):
 
 def _metric_text(metric, language: str = "en") -> str:
     if metric.value_state.value == "finite":
-        value = str(metric.value)
+        value = (
+            format(metric.value, ".6g") if isinstance(metric.value, float) else str(metric.value)
+        )
         if metric.interval is not None:
             value += f" · {I18N[language]['confidence_interval']}: [{metric.interval[0]}, {metric.interval[1]}]"
         return value

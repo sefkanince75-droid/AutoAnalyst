@@ -7,7 +7,7 @@ import streamlit as st
 
 from ..domain.codec import utc_now
 from ..domain.runs import RunStatus
-from ..localization import I18N, label
+from ..localization import I18N, failure_text, label
 
 ACTIVE = {RunStatus.PENDING, RunStatus.RUNNING}
 
@@ -42,7 +42,9 @@ def render_events(runtime, run_id: str, language: str) -> None:
                 t["event_type"]: t.get("event." + event["event_type"], t["event.other"]),
                 t["event_stage"]: _stage(event["stage"], language),
                 t["event_progress"]: _progress_text(payload, language),
-                t["event_detail"]: t.get(payload.get("error_code"), t["generic_error"])
+                t["event_detail"]: failure_text(
+                    payload.get("error_code"), payload.get("reason"), language
+                )
                 if payload.get("error_code")
                 else label(payload.get("model_id", ""), language)
                 if payload.get("model_id") in {"dummy", "logistic_regression", "random_forest"}
@@ -57,6 +59,7 @@ def _remember_terminal(run, project_id):
     st.session_state.last_run_notice = run.run_id
     if run.project_id == project_id and run.status is RunStatus.COMPLETED:
         st.session_state.last_result_id = run.result_id
+        st.session_state.pending_workspace_tab = "results"
     st.session_state.pop("active_run_id", None)
 
 
@@ -80,7 +83,7 @@ def render_run_monitor(runtime, project_id: str, language: str) -> None:
             elif notice.status is RunStatus.CANCELLED:
                 st.warning(t["cancelled"])
             else:
-                st.error(t.get(notice.error_code, t["generic_error"]))
+                st.error(run_failure_text(runtime, notice, language))
             if st.button(t["dismiss_notice"], key="dismiss_run_notice"):
                 st.session_state.pop("last_run_notice", None)
                 st.rerun()
@@ -163,3 +166,16 @@ def render_run_monitor(runtime, project_id: str, language: str) -> None:
                 render_events(runtime, run_id, language)
 
     poll()
+
+
+def run_failure_text(runtime, run, language):
+    events = runtime.run_store.list_events(run.run_id, limit=100)
+    reason = next(
+        (
+            event["payload"].get("reason")
+            for event in reversed(events)
+            if event["event_type"] == "failed"
+        ),
+        None,
+    )
+    return failure_text(run.error_code, reason, language)

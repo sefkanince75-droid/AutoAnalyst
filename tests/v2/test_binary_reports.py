@@ -6,6 +6,7 @@ import pytest
 from openpyxl import load_workbook
 
 from autoanalyst.domain.errors import ResourceError, SchemaError
+from autoanalyst.localization import I18N
 from autoanalyst.reporting.binary_formats import chart_figures
 from autoanalyst.reporting.render import _render_bytes
 from tests.v2.test_chart_presentation import histogram_result
@@ -22,17 +23,22 @@ def test_real_pdf_xlsx_use_saved_chart_bins_and_literal_cells(language):
     workbook, mime = _render_bytes(result, "xlsx", language)
     assert mime.endswith("spreadsheetml.sheet")
     saved = load_workbook(io.BytesIO(workbook))
-    assert list(saved["Table_2"].values) == [result.tables[1].columns, *result.tables[1].rows]
-    assert saved["Chart_1"]["A2"].value == f"Source: {view.table_id}"
-    assert len(saved["Chart_1"]._images) == 1
+    assert list(saved[f"{I18N[language]['sheet_table']}_2"].values) == [
+        result.tables[1].columns,
+        *result.tables[1].rows,
+    ]
+    assert saved[f"{I18N[language]['sheet_chart']}_1"]["A2"].value == I18N[language][
+        "chart_source"
+    ].format(index=2)
+    assert len(saved[f"{I18N[language]['sheet_chart']}_1"]._images) == 1
     with zipfile.ZipFile(io.BytesIO(workbook)) as archive:
         assert "xl/media/image1.png" in archive.namelist()
     table = replace(result.tables[0], rows=(("=1+2", "+SUM(A1:A3)"),))
     literal = replace(result, tables=(table,))
     workbook, _ = _render_bytes(literal, "xlsx", language)
     saved = load_workbook(io.BytesIO(workbook))
-    assert saved["Table_1"]["A2"].value == "=1+2"
-    assert saved["Table_1"]["A2"].data_type == "s"
+    assert saved[f"{I18N[language]['sheet_table']}_1"]["A2"].value == "=1+2"
+    assert saved[f"{I18N[language]['sheet_table']}_1"]["A2"].data_type == "s"
 
 
 def test_spreadsheet_never_silently_truncates_cells():

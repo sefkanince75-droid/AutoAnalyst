@@ -33,7 +33,7 @@ from .preparation_panel import render_preparation_panel as _preparation_panel
 from .project_management import render_archived_projects, render_project_management
 from .recipe_editor import clear_draft as _clear_draft
 from .result_view import render_result
-from .run_monitor import render_events, render_run_monitor
+from .run_monitor import render_events, render_run_monitor, run_failure_text
 from .storage_maintenance import render_storage_maintenance
 from .supervised_panel import render_supervised
 from .typed_inputs import input_kind
@@ -84,9 +84,15 @@ def main() -> None:
         return
     render_project_management(runtime, project, language)
     dataset = _select_dataset(datasets, project.project_id, language)
-    render_run_monitor(runtime, project.project_id, language)
+    with st.container():
+        render_run_monitor(runtime, project.project_id, language)
 
-    tabs = st.tabs((t["data"], t["analysis"], t["results"], t["history"]))
+    tab_labels = (t["data"], t["analysis"], t["results"], t["history"])
+    if pending_tab := st.session_state.pop("pending_workspace_tab", None):
+        st.session_state.workspace_tab = t[pending_tab]
+    if st.session_state.get("workspace_tab") not in tab_labels:
+        st.session_state.workspace_tab = tab_labels[0]
+    tabs = st.tabs(tab_labels, key="workspace_tab", on_change="rerun")
     with tabs[0]:
         _data_tab(runtime, project, dataset, datasets, language)
     with tabs[1]:
@@ -113,7 +119,7 @@ def _select_project(service: ProjectService, language: str):
     projects = service.list()
     with st.sidebar.expander(t["create_project"], expanded=not projects):
         name = st.text_input(t["name"], key="new_project_name")
-        if st.button(t["create_project"], key="create_project") and name.strip():
+        if st.button(t["create_project"], key="create_project", disabled=not name.strip()):
             created = service.create(name.strip(), default_language=language)
             st.session_state.project_id = created.project_id
             st.session_state.project_selector = created
@@ -147,7 +153,7 @@ def _select_dataset(service: DatasetService, project_id: str, language: str):
     datasets = service.list(project_id)
     with st.sidebar.expander(t["create_dataset"]):
         name = st.text_input(t["name"], key="new_dataset_name")
-        if st.button(t["create_dataset"], key="create_dataset") and name.strip():
+        if st.button(t["create_dataset"], key="create_dataset", disabled=not name.strip()):
             created = service.create(project_id, name.strip())
             st.session_state.dataset_id = created.dataset_id
             st.rerun()
@@ -516,7 +522,21 @@ def _binary_form(
         st.info(t["binary_target_required"])
     if not feature_names:
         st.info(t["features_required"])
-    if st.button(t["run"], key="run_binary", disabled=len(labels) != 2 or not feature_names):
+    from ..analyses.binary.module import BinaryClassificationModule
+
+    leakage = False
+    try:
+        BinaryClassificationModule(
+            runtime.catalog, runtime.artifact_store
+        )._assert_no_dataset_leakage(
+            version_id, {str(by_name[name]["column_id"]) for name in (target_name, *feature_names)}
+        )
+    except MethodNotApplicableError as exc:
+        st.warning(error_text(exc, t["locale"]))
+        leakage = True
+    if st.button(
+        t["run"], key="run_binary", disabled=len(labels) != 2 or not feature_names or leakage
+    ):
         roles: list[ColumnRole] = [
             ColumnRole(
                 str(by_name[name]["column_id"]),
@@ -656,13 +676,27 @@ def _score_form(
             f"{name} →", choices, index=default, key=f"score_map_{training_id}"
         )
         mapping[training_id] = str(by_name[selected_name]["column_id"])
+    identifier_names = st.multiselect(
+        t["prediction_identifiers"],
+        tuple(by_name),
+        default=list(by_name)[:1],
+        key=f"score_identifiers_{version_id}",
+        max_selections=20,
+    )
+    st.caption(t["prediction_identifiers_hint"])
     if st.button(t["score"], key="run_scoring"):
         spec = _spec(
             project_id,
             version_id,
             AnalysisModuleId.BINARY_CLASSIFICATION,
             "score_new_data",
-            {"training_run_id": run.run_id, "feature_mapping": mapping},
+            {
+                "training_run_id": run.run_id,
+                "feature_mapping": mapping,
+                "identifier_column_ids": [
+                    str(by_name[name]["column_id"]) for name in identifier_names
+                ],
+            },
             (),
         )
         _launch(runtime, spec, parent_run_id=run.run_id)
@@ -693,7 +727,12 @@ def _results_tab(runtime, project, language: str) -> None:
     result = runtime.run_store.get_result(run.result_id)
     render_result(result, language)
     st.subheader(t["export"])
-    fmt = st.selectbox(t["format"], ("html", "markdown", "json", "csv", "pdf", "xlsx"))
+    fmt = st.radio(
+        t["format"],
+        ("html", "markdown", "json", "csv", "pdf", "xlsx"),
+        horizontal=True,
+        key="report_format",
+    )
     report_language = st.selectbox(
         t["report_language"], ("en", "tr"), index=0 if language == "en" else 1
     )
@@ -757,9 +796,7 @@ def _history_tab(runtime, project, dataset, datasets: DatasetService, language: 
                     t["value.status"]: label(run.status.value, language),
                     t["value.created_at"]: run.created_at,
                     label("result_id", language): run.result_id,
-                    t["failed"]: t.get(run.error_code, t["generic_error"])
-                    if run.error_code
-                    else "",
+                    t["failed"]: run_failure_text(runtime, run, language) if run.error_code else "",
                 }
                 for run in runs
             ]
@@ -773,12 +810,12 @@ def _history_tab(runtime, project, dataset, datasets: DatasetService, language: 
         }
         selected_run = st.selectbox(
             t["run_events"],
-            [run.run_id for run in reversed(runs)],
-            format_func=run_labels.__getitem__,
+            [(run.run_id, run.status.value) for run in reversed(runs)],
+            format_func=lambda item: run_labels[item[0]],
             key=f"history_event_run_{project.project_id}",
         )
         with st.expander(t["run_events"]):
-            render_events(runtime, selected_run, language)
+            render_events(runtime, selected_run[0], language)
     if dataset is not None:
         st.subheader(t["dataset_versions"])
         versions = datasets.version_history(dataset.dataset_id)

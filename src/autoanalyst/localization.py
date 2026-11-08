@@ -1127,6 +1127,8 @@ I18N = {
 
 
 def label(value: object, language: str) -> str:
+    if isinstance(value, str) and value.startswith("input: "):
+        return ("Girdi: " if language == "tr" else "Input: ") + value[7:]
     if isinstance(value, bool):
         value = "true" if value else "false"
     return I18N[language].get("value." + str(value), str(value))
@@ -1138,9 +1140,26 @@ def finding_text(code: str, language: str, parameters: Mapping[str, object] | No
     if "partition" in values:
         values["partition"] = label(values["partition"], language)
     try:
-        return template.format_map(values)
+        message = template.format_map(values)
+        if code.startswith("profiling.") and values.get("column_name"):
+            message = f"{values['column_name']}: {message}"
+        return message
     except (KeyError, ValueError):
         return I18N[language]["unknown_finding"]
+
+
+def result_finding_text(result, finding, language: str) -> str:
+    values = dict(finding.parameters)
+    if finding.affected_column_ids and not values.get("column_name"):
+        names = {}
+        for table in result.tables:
+            if "column_id" in table.columns and "display_name" in table.columns:
+                key, name = table.columns.index("column_id"), table.columns.index("display_name")
+                names.update({str(row[key]): str(row[name]) for row in table.rows})
+        found = [names[column] for column in finding.affected_column_ids if column in names]
+        if found:
+            values["column_name"] = ", ".join(found)
+    return finding_text(finding.code, language, values)
 
 
 def error_text(error: Exception, language: str) -> str:
@@ -1159,6 +1178,16 @@ def error_text(error: Exception, language: str) -> str:
         }.get(error.code.value, error.code.value)
         return catalog.get(key, catalog["generic_error"])
     return catalog["generic_error"]
+
+
+def failure_text(code: object, reason: object, language: str) -> str:
+    """Localize closed failure reasons without exposing raw worker context."""
+    catalog = I18N[language]
+    fallback = {
+        "method_not_applicable": "method_error",
+        "unexpected_execution": "generic_error",
+    }.get(str(code), str(code))
+    return catalog.get("error." + str(reason), catalog.get(fallback, catalog["generic_error"]))
 
 
 def cell_text(value: object, column: str, language: str):
@@ -1654,3 +1683,62 @@ for _language, _messages in {
     },
 }.items():
     I18N[_language].update(_messages)
+
+
+_UAT_MESSAGES = {
+    "prediction_identifiers": (
+        "Columns to identify predictions (up to 20)",
+        "Tahmini eşleştirecek kimlik sütunları (en fazla 20)",
+    ),
+    "prediction_identifiers_hint": (
+        "Selected input values are saved beside each score. They are not used as model features.",
+        "Seçilen girdi değerleri skorun yanında kaydedilir; model özelliği olarak kullanılmaz.",
+    ),
+    "error.binary.scoring_identifiers_invalid": (
+        "Select up to 20 distinct input columns to identify predictions.",
+        "Tahminleri eşleştirmek için en fazla 20 farklı girdi sütunu seçin.",
+    ),
+    "value.rows_scored": ("Rows scored", "Tahmin edilen satır sayısı"),
+    "preparation_applied_notice": (
+        "Preparation applied. A new version was saved; earlier versions remain available.",
+        "Hazırlama uygulandı. Yeni sürüm kaydedildi; önceki sürümlere erişebilirsiniz.",
+    ),
+    "run_completed_notice": (
+        "Analysis {run} completed. Open the Results tab to review it.",
+        "{run} analizi tamamlandı. İncelemek için Sonuçlar sekmesini açın.",
+    ),
+    "stage.recovery": ("Result verification", "Sonuç doğrulama"),
+    "sheet_overview": ("Overview", "Özet"),
+    "sheet_metrics": ("Metrics", "Ölçütler"),
+    "sheet_metadata": ("Metadata", "Teknik bilgiler"),
+    "sheet_table": ("Table", "Tablo"),
+    "sheet_chart": ("Chart", "Grafik"),
+    "technical_appendix_hint": (
+        "Technical metadata and full saved tables are available in XLSX / JSON.",
+        "Teknik ayrıntılar ve kayıtlı tabloların tamamı XLSX / JSON çıktısında bulunur.",
+    ),
+    "recommended_model_notice": (
+        "Recommended model: {model} · Decision threshold: {threshold}",
+        "Önerilen model: {model} · Karar eşiği: {threshold}",
+    ),
+    "model_next_step": (
+        "Next: choose Final evaluation in Analysis, then score a new dataset.",
+        "Sonraki adım: Analiz'den Son test değerlendirmesini seçin; ardından yeni veri setinde tahmin yapın.",
+    ),
+    "prediction_score_hint": (
+        "Scores are uncalibrated model scores, not guaranteed probabilities.",
+        "Skorlar kalibre edilmemiş model skorlarıdır; doğrulanmış olasılık olarak yorumlanmamalıdır.",
+    ),
+    "confusion_matrix": ("Confusion matrix", "Karmaşıklık matrisi"),
+}
+for _key, (_en, _tr) in _UAT_MESSAGES.items():
+    I18N["en"][_key] = _en
+    I18N["tr"][_key] = _tr
+
+I18N["en"].update(
+    predicted_axis="Predicted (0: negative, 1: positive)",
+    actual_axis="Actual (0: negative, 1: positive)",
+)
+I18N["tr"].update(
+    predicted_axis="Tahmin (0: negatif, 1: pozitif)", actual_axis="Gerçek (0: negatif, 1: pozitif)"
+)

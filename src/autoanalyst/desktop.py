@@ -93,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         "server.runOnSave": False,
         "server.maxUploadSize": 256,
         "browser.gatherUsageStats": False,
+        "client.toolbarMode": "minimal",
     }
     # bootstrap.run does not apply flag_options initially. The Streamlit CLI
     # calls this first; without it these flags only take effect on config reload.

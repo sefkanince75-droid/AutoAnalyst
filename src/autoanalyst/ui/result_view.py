@@ -7,7 +7,7 @@ import streamlit as st
 
 from ..domain.codec import to_primitive
 from ..domain.results import AnalysisResult
-from ..localization import I18N, cell_text, finding_text, label
+from ..localization import I18N, cell_text, label, result_finding_text
 from ..reporting.charts import chart_views, summary_metrics, table_title
 from ..reporting.summary import result_summary
 
@@ -18,13 +18,53 @@ def render_result(result: AnalysisResult, language: str) -> None:
         with st.expander(t["model_card"]):
             st.json(to_primitive(result.provenance["model_card"]))
     overview = result_summary(result, language)
-    with st.expander(t["report_overview"], expanded=True):
+    with st.expander(t["report_overview"], expanded=False):
         for line in overview.lines:
             st.text(line)
         st.caption(overview.scope)
     st.write(
         f"**{label(result.module_id.value, language)}** · {label(result.outcome.value, language)}"
     )
+    recommendation = result.provenance.get("recommended_model")
+    if recommendation:
+        st.success(
+            t["recommended_model_notice"].format(
+                model=label(recommendation["model_id"], language),
+                threshold=format(float(recommendation["threshold"]), ".4g"),
+            )
+        )
+        st.info(t["model_next_step"])
+    if result.methodology.get("operation") == "score_new_data":
+        st.caption(t["prediction_score_hint"])
+    if result.methodology.get("operation") == "final_evaluate":
+        metrics = {metric.name: metric.value for metric in result.metrics}
+        shown = [
+            name
+            for name in ("precision", "recall", "roc_auc", "f1")
+            if metrics.get(name) is not None
+        ]
+        if shown:
+            for column, name in zip(st.columns(len(shown)), shown, strict=True):
+                column.metric(label(name, language), format(float(metrics[name]), ".4g"))
+        if all(metrics.get(name) is not None for name in ("tn", "fp", "fn", "tp")):
+            from matplotlib.figure import Figure
+
+            figure = Figure(figsize=(5, 3.5), layout="constrained")
+            axis = figure.subplots()
+            matrix = [[metrics["tn"], metrics["fp"]], [metrics["fn"], metrics["tp"]]]
+            axis.imshow(matrix, cmap="Blues")
+            axis.set_title(t["confusion_matrix"])
+            axis.set_xticks((0, 1), ("0", "1"))
+            axis.set_yticks((0, 1), ("0", "1"))
+            axis.set_xlabel(t["predicted_axis"])
+            axis.set_ylabel(t["actual_axis"])
+            for row in range(2):
+                for col in range(2):
+                    axis.text(
+                        col, row, str(matrix[row][col]), ha="center", va="center", color="#d97706"
+                    )
+            st.pyplot(figure)
+            figure.clear()
     summary = summary_metrics(result)
     if summary:
         st.subheader(t["summary"])
@@ -32,7 +72,7 @@ def render_result(result: AnalysisResult, language: str) -> None:
             column.metric(label(metric.name, language), str(metric.value))
     for finding in result.findings:
         show = {"info": st.info, "warning": st.warning, "error": st.error}[finding.severity.value]
-        show(finding_text(finding.code, language, finding.parameters))
+        show(result_finding_text(result, finding, language))
     if result.charts:
         st.subheader(t["charts"])
         indexes = {table.table_id: index for index, table in enumerate(result.tables, 1)}

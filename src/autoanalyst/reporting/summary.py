@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 from ..domain.results import AnalysisResult
-from ..localization import I18N, finding_text, label
+from ..localization import I18N, label, result_finding_text
 from .charts import summary_metrics
 
 
@@ -35,7 +35,7 @@ def result_summary(result: AnalysisResult, language: str) -> ResultSummary:
             text += f" (n={metric.sample_size})"
         lines.append(text)
     cautions = [f for f in result.findings if f.severity.value in {"warning", "error"}]
-    lines.extend(finding_text(f.code, language, f.parameters) for f in cautions[:3])
+    lines.extend(result_finding_text(result, f, language) for f in cautions[:3])
     if len(cautions) > 3:
         lines.append(t["summary_more_findings"].format(count=len(cautions) - 3))
     return ResultSummary(tuple(lines), t["summary_scope"])
