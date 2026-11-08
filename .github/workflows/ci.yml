@@ -41,7 +41,6 @@ jobs:
         if: runner.os == 'Linux'
         run: uv run ruff format --check src/autoanalyst tests/v2 tools
       - name: Type check core contracts
-        if: runner.os == 'Linux'
         run: >-
           uv run mypy
           src/autoanalyst/domain

@@ -18,6 +18,7 @@ Bu kayıt, kararlı sürüm ilanı değildir. GitHub'a gönderim kapsamı V2 kay
 - Temiz snapshot'tan wheel/sdist ve yeni Windows EXE üretildi. Wheel/sdist içinde workspace, geçici veri, secret veya cache dosyası bulunmadı.
 - İzole wheel `python -I` öz testi ve yeni EXE'nin geçersiz uzak HTTP/HTTPS proxy ayarlarıyla öz testi başarılı. Öz test geçici workspace kullanır; gerçek kullanıcı verisini açmaz.
 - 97 frozen modül ve desktop giriş noktası kaynakla karşılaştırıldı; wheel Python kaynakları da eşleşti.
+- İlk uzak Linux Mypy çalışması Windows sabitine doğrudan erişimi yakaladı. Erişim taşınabilir `getattr` ile düzeltildi; Linux/win32 platform tip kontrolleri ve 26 gerçek veri-worker testi geçti. Mypy artık CI'da iki işletim sisteminde de çalışır.
 - CI ve Windows paket doğrulaması branch/PR olaylarında çalışır. Push/PR concurrency grupları aynı kaynak branch'i paylaşarak tekrarlı çalışmaları iptal eder. Workflow token'ı salt okunurdur.
 - Lock workflow'u artık otomatik commit/push yapmaz; manuel, salt okunur doğrulama yapar. Paket workflow'u artifact üretir, GitHub Release oluşturmaz; sürüm etiketi tetikleyicisi kaldırıldı.
 - PowerShell'de native komut hata kodları açıkça denetlenir. Üç YAML dosyası ayrıştırıldı. İsteğe bağlı actionlint kurulumu upstream binary indirmesi başarısız olduğu için çalışmadı; GitHub Actions'ın gerçek sonuçları ayrıca PR üzerinden izlenir.

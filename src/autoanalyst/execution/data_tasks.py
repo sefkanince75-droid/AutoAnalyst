@@ -208,7 +208,7 @@ class DataTaskService:
                     command,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
                 identity = activate_worker(self.root, job_id, process.pid)
                 atomic_json(
