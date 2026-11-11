@@ -21,6 +21,7 @@ from ..localization import I18N, cell_text, error_text, label
 from ..reporting import ReportService
 from ..reporting.render import TEMPLATE_VERSION
 from ..storage.binary import BinaryStore
+from .about_panel import render_about
 from .command_panel import render_command_panel
 from .data_browser import render_data_browser
 from .data_export import render_data_export
@@ -47,6 +48,7 @@ def main() -> None:
         runtime = build_runtime(st.session_state.get("active_workspace"))
     except SchemaError as exc:
         language = st.session_state.get("language", "en")
+        render_about(language)
         st.title(I18N[language]["title"])
         st.error(
             "Çalışma alanı bu sürümle uyumlu değil. Verileriniz silinmedi. / This workspace is incompatible; your data has been preserved."
@@ -65,6 +67,7 @@ def main() -> None:
         "Language / Dil", ("en", "tr"), key="language", on_change=_remember_language_override
     )
     t = I18N[language]
+    render_about(language)
     st.title(t["title"])
     st.caption(t["subtitle"])
 

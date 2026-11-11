@@ -1742,3 +1742,31 @@ I18N["en"].update(
 I18N["tr"].update(
     predicted_axis="Tahmin (0: negatif, 1: pozitif)", actual_axis="Gerçek (0: negatif, 1: pozitif)"
 )
+
+
+_ABOUT_MESSAGES = {
+    "about_title": ("About AutoAnalyst", "Uygulama hakkında"),
+    "about_version": ("Version", "Sürüm"),
+    "about_prerelease": ("Pre-release", "Ön sürüm"),
+    "about_versioned": ("Versioned build", "Sürümlü derleme"),
+    "about_build": ("Build ID", "Derleme kimliği"),
+    "about_built_at": ("Built at (UTC)", "Derleme zamanı (UTC)"),
+    "about_commit": ("Source revision", "Kaynak kod revizyonu"),
+    "about_source": ("Package source", "Paket kaynağı"),
+    "about_ci": ("GitHub Actions", "GitHub Actions"),
+    "about_local": ("Local build", "Yerel derleme"),
+    "about_development": ("Development environment", "Geliştirme ortamı"),
+    "about_unknown": ("Not recorded in this package", "Bu pakette kayıtlı değil"),
+    "about_location": ("Running application", "Çalışan uygulamanın konumu"),
+    "about_help": (
+        "The build ID distinguishes updates with the same version number. Include it when reporting a problem.",
+        "Derleme kimliği, sürüm numarası aynı olan güncellemeleri ayırt eder. Sorun bildirirken bu bilgiyi paylaşabilirsiniz.",
+    ),
+    "about_prerelease_notice": (
+        "This is a pre-release build; it has not been announced as a stable release.",
+        "Bu paket ön sürümdür; kararlı sürüm olarak duyurulmamıştır.",
+    ),
+}
+for _key, (_en, _tr) in _ABOUT_MESSAGES.items():
+    I18N["en"][_key] = _en
+    I18N["tr"][_key] = _tr
