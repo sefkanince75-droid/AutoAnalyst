@@ -41,12 +41,7 @@ def phase3_workspace(tmp_path: Path) -> Phase3Workspace:
         project_id=project.project_id,
         dataset_id=dataset.dataset_id,
         source=(
-            b"num,text,flag,group\n"
-            b"1,1,true,a\n"
-            b"2,,false,a\n"
-            b",x,true,b\n"
-            b"4,x,false,b\n"
-            b"inf,z,true,c\n"
+            b"num,text,flag,group\n1,1,true,a\n2,,false,a\n,x,true,b\n4,x,false,b\ninf,z,true,c\n"
         ),
         original_name="input.csv",
     )

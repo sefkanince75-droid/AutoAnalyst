@@ -70,9 +70,12 @@ def test_final_step_failure_never_moves_head_or_publishes_preview(phase3_workspa
     after = phase3_workspace.datasets.get(phase3_workspace.dataset.dataset_id)
     assert after == before
     with phase3_workspace.catalog.connection() as connection:
-        assert connection.execute(
-            "SELECT count(*) FROM preparation_previews WHERE recipe_id = ?", (recipe.recipe_id,)
-        ).fetchone()[0] == 0
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM preparation_previews WHERE recipe_id = ?", (recipe.recipe_id,)
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_candidate_artifact_is_verified_and_preview_round_trips(phase3_workspace) -> None:
@@ -177,7 +180,9 @@ def test_rename_cast_drop_schema_evolution_preserves_remaining_ids(phase3_worksp
     flag = phase3_workspace.column("flag")
     original_ids = {
         row["display_name"]: row["column_id"]
-        for row in phase3_workspace.catalog.list_columns(phase3_workspace.imported.version.version_id)
+        for row in phase3_workspace.catalog.list_columns(
+            phase3_workspace.imported.version.version_id
+        )
         if not row["is_system"]
     }
     recipe = phase3_workspace.preparation.create_recipe(
@@ -203,7 +208,9 @@ def test_rename_cast_drop_schema_evolution_preserves_remaining_ids(phase3_worksp
         ],
     )
     preview = phase3_workspace.preparation.preview_recipe(recipe.recipe_id)
-    users = {column.display_name: column for column in preview.candidate_columns if not column.is_system}
+    users = {
+        column.display_name: column for column in preview.candidate_columns if not column.is_system
+    }
 
     assert users["label"].column_id == original_ids["text"]
     assert users["num"].column_id == original_ids["num"]

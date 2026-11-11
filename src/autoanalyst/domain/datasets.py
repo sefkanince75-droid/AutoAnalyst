@@ -73,7 +73,9 @@ class Dataset:
         object.__setattr__(self, "dataset_id", require_uuid(self.dataset_id, "dataset_id"))
         object.__setattr__(self, "project_id", require_uuid(self.project_id, "project_id"))
         if self.head_version_id is not None:
-            object.__setattr__(self, "head_version_id", require_uuid(self.head_version_id, "head_version_id"))
+            object.__setattr__(
+                self, "head_version_id", require_uuid(self.head_version_id, "head_version_id")
+            )
         if not self.name.strip() or self.head_revision < 0:
             raise ValueError("Dataset name is required and head_revision cannot be negative")
 
@@ -92,7 +94,9 @@ class DatasetSource:
 
     def __post_init__(self) -> None:
         for field_name in ("source_id", "project_id", "raw_artifact_id"):
-            object.__setattr__(self, field_name, require_uuid(getattr(self, field_name), field_name))
+            object.__setattr__(
+                self, field_name, require_uuid(getattr(self, field_name), field_name)
+            )
         object.__setattr__(self, "format", SourceFormat(self.format))
         object.__setattr__(self, "raw_sha256", require_sha256(self.raw_sha256, "raw_sha256"))
         require_utc(self.imported_at, "imported_at")
@@ -118,12 +122,18 @@ class DatasetVersion:
 
     def __post_init__(self) -> None:
         for field_name in ("version_id", "dataset_id", "created_by_run_id", "table_artifact_id"):
-            object.__setattr__(self, field_name, require_uuid(getattr(self, field_name), field_name))
+            object.__setattr__(
+                self, field_name, require_uuid(getattr(self, field_name), field_name)
+            )
         if self.recipe_id is not None:
             object.__setattr__(self, "recipe_id", require_uuid(self.recipe_id, "recipe_id"))
         object.__setattr__(self, "kind", DatasetVersionKind(self.kind))
         object.__setattr__(self, "schema_hash", require_sha256(self.schema_hash, "schema_hash"))
-        object.__setattr__(self, "content_fingerprint", require_sha256(self.content_fingerprint, "content_fingerprint"))
+        object.__setattr__(
+            self,
+            "content_fingerprint",
+            require_sha256(self.content_fingerprint, "content_fingerprint"),
+        )
         require_utc(self.created_at, "created_at")
         if self.row_count < 0 or self.column_count < 0:
             raise ValueError("Dataset dimensions cannot be negative")

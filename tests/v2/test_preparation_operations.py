@@ -25,7 +25,9 @@ def _candidate_table(workspace, preview):
 def test_drop_last_user_column_and_system_drop_are_rejected(phase3_workspace) -> None:
     user_ids = tuple(
         row["column_id"]
-        for row in phase3_workspace.catalog.list_columns(phase3_workspace.imported.version.version_id)
+        for row in phase3_workspace.catalog.list_columns(
+            phase3_workspace.imported.version.version_id
+        )
         if not row["is_system"]
     )
     recipe = phase3_workspace.preparation.create_recipe(
@@ -39,7 +41,9 @@ def test_drop_last_user_column_and_system_drop_are_rejected(phase3_workspace) ->
 
     system_id = next(
         row["column_id"]
-        for row in phase3_workspace.catalog.list_columns(phase3_workspace.imported.version.version_id)
+        for row in phase3_workspace.catalog.list_columns(
+            phase3_workspace.imported.version.version_id
+        )
         if row["is_system"]
     )
     system_recipe = phase3_workspace.preparation.create_recipe(
@@ -59,7 +63,9 @@ def test_rename_preserves_column_id_and_duplicate_name_is_rejected(phase3_worksp
         "rename_column",
         {"column_id": text["column_id"], "new_name": "description"},
     )
-    renamed = next(column for column in preview.candidate_columns if column.column_id == text["column_id"])
+    renamed = next(
+        column for column in preview.candidate_columns if column.column_id == text["column_id"]
+    )
     assert renamed.display_name == "description"
 
     recipe = phase3_workspace.preparation.create_recipe(
@@ -159,7 +165,10 @@ def test_constant_fill_preserves_typed_value(phase3_workspace) -> None:
         },
     )
     column = next(item for item in preview.candidate_columns if item.column_id == text["column_id"])
-    assert _candidate_table(phase3_workspace, preview)[column.physical_name].to_pylist()[1] == "missing"
+    assert (
+        _candidate_table(phase3_workspace, preview)[column.physical_name].to_pylist()[1]
+        == "missing"
+    )
     assert preview.step_results[0].resolved_values[text["column_id"]]["type"] == "string"
 
 
@@ -284,9 +293,7 @@ def test_append_rejects_duplicate_or_base_version_inputs(phase3_workspace) -> No
     recipe = phase3_workspace.preparation.create_recipe(
         project_id=phase3_workspace.project.project_id,
         base_version_id=base_id,
-        steps=[
-            {"operation": "append_rows", "parameters": {"input_version_ids": [base_id]}}
-        ],
+        steps=[{"operation": "append_rows", "parameters": {"input_version_ids": [base_id]}}],
     )
     with pytest.raises(SchemaError) as base:
         phase3_workspace.preparation.preview_recipe(recipe.recipe_id)

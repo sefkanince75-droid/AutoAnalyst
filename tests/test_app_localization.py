@@ -4,7 +4,7 @@ from streamlit.testing.v1 import AppTest
 
 
 def test_language_selector_switches_initial_ui_to_german() -> None:
-    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run(timeout=20)
+    app = AppTest.from_file(Path(__file__).parents[1] / "legacy_app.py").run(timeout=20)
     app.selectbox[0].set_value("Deutsch")
     app.run(timeout=20)
     assert not app.exception

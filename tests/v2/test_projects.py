@@ -14,7 +14,10 @@ def test_project_create_get_list_and_rename(tmp_path: Path) -> None:
     second = service.create("First")
 
     assert service.get(first.project_id) == first
-    assert {project.project_id for project in service.list()} == {first.project_id, second.project_id}
+    assert {project.project_id for project in service.list()} == {
+        first.project_id,
+        second.project_id,
+    }
     renamed = service.rename(first.project_id, "Renamed")
     assert renamed.name == "Renamed"
     assert renamed.revision == 1

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, replace
 import hashlib
-from pathlib import Path
 import sqlite3
+from dataclasses import FrozenInstanceError, replace
+from pathlib import Path
 
 import pyarrow.parquet as pq
 import pytest
@@ -13,7 +13,7 @@ from autoanalyst.application.datasets import DatasetService
 from autoanalyst.application.projects import ProjectService
 from autoanalyst.data.ingest import CSVIngestor
 from autoanalyst.data.schema import INTERNAL_ROW_ID, INTERNAL_ROW_ORDER
-from autoanalyst.domain.errors import SchemaError
+from autoanalyst.domain.errors import AutoAnalystError, SchemaError
 from autoanalyst.storage.artifacts import ArtifactStore
 from autoanalyst.storage.sqlite import SQLiteCatalog
 
@@ -25,6 +25,20 @@ def _workspace(tmp_path: Path):
     dataset = datasets.create(project.project_id, "Orders")
     ingestor = CSVIngestor(catalog, ArtifactStore(catalog.paths.root))
     return catalog, project, datasets, dataset, ingestor
+
+
+@pytest.mark.parametrize("content", [b"", b"a,a\n1,2\n", b"a,b\n", b"a,b\n1,2\n3,4,5\n"])
+def test_rejected_csv_leaves_no_artifacts_or_head_change(tmp_path, content):
+    catalog, project, datasets, dataset, ingestor = _workspace(tmp_path)
+    with pytest.raises(AutoAnalystError):
+        ingestor.import_csv(
+            project_id=project.project_id, dataset_id=dataset.dataset_id, source=content
+        )
+    assert datasets.current_version(dataset.dataset_id) is None
+    with catalog.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM artifacts").fetchone()[0] == 0
+    assert not [p for p in catalog.paths.projects.rglob("*") if p.is_file()]
+    assert not list(catalog.paths.staging.iterdir())
 
 
 def test_csv_import_preserves_raw_and_creates_canonical_parquet(tmp_path: Path) -> None:
@@ -39,7 +53,9 @@ def test_csv_import_preserves_raw_and_creates_canonical_parquet(tmp_path: Path) 
     )
 
     raw_path = ingestor.artifact_store.resolve_relative_path(result.raw_artifact.relative_path)
-    parquet_path = ingestor.artifact_store.resolve_relative_path(result.table_artifact.relative_path)
+    parquet_path = ingestor.artifact_store.resolve_relative_path(
+        result.table_artifact.relative_path
+    )
     assert raw_path.read_bytes() == content
     assert result.source.raw_sha256 == hashlib.sha256(content).hexdigest()
     assert result.raw_artifact.relative_path != result.source.original_name
@@ -66,10 +82,16 @@ def test_column_ids_are_unique_and_reserved_display_names_are_preserved(tmp_path
     )
 
     assert len({column.column_id for column in result.columns}) == len(result.columns)
-    user_row_id = next(column for column in result.columns if not column.is_system and column.display_name == "row_id")
+    user_row_id = next(
+        column
+        for column in result.columns
+        if not column.is_system and column.display_name == "row_id"
+    )
     assert user_row_id.physical_name != INTERNAL_ROW_ID
     assert "row_id" not in user_row_id.column_id
-    table = pq.read_table(ingestor.artifact_store.resolve_relative_path(result.table_artifact.relative_path))
+    table = pq.read_table(
+        ingestor.artifact_store.resolve_relative_path(result.table_artifact.relative_path)
+    )
     assert table[user_row_id.physical_name].to_pylist() == ["user-1"]
     assert len(catalog.list_columns(result.version.version_id)) == 4
 
@@ -91,7 +113,9 @@ def test_duplicate_headers_are_rejected_without_publishing_head(tmp_path: Path) 
     assert catalog.list_head_events(dataset.dataset_id) == ()
 
 
-def test_failed_metadata_transaction_never_publishes_version_or_head(tmp_path: Path, monkeypatch) -> None:
+def test_failed_metadata_transaction_never_publishes_version_or_head(
+    tmp_path: Path, monkeypatch
+) -> None:
     catalog, project, datasets, dataset, ingestor = _workspace(tmp_path)
     real_build_columns = ingest_module.build_columns
 

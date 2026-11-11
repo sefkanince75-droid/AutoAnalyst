@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from uuid import uuid4
 
 import pytest
 
@@ -43,8 +43,13 @@ def test_apply_uses_candidate_without_recomputing_and_publishes_new_version(
     assert version.table_artifact_id == preview.candidate_artifact_id
     assert dataset.head_version_id == version.version_id
     assert dataset.head_revision == 2
-    assert phase3_workspace.catalog.list_head_events(dataset.dataset_id)[-1]["reason"] == "preparation_apply"
-    assert phase3_workspace.preparation.get_preview(preview.preview_id).status is PreviewStatus.APPLIED
+    assert (
+        phase3_workspace.catalog.list_head_events(dataset.dataset_id)[-1]["reason"]
+        == "preparation_apply"
+    )
+    assert (
+        phase3_workspace.preparation.get_preview(preview.preview_id).status is PreviewStatus.APPLIED
+    )
 
 
 def test_apply_is_idempotent(phase3_workspace) -> None:
@@ -55,6 +60,24 @@ def test_apply_is_idempotent(phase3_workspace) -> None:
     assert second == first
     assert len(phase3_workspace.datasets.version_history(phase3_workspace.dataset.dataset_id)) == 2
     assert phase3_workspace.datasets.get(phase3_workspace.dataset.dataset_id).head_revision == 2
+
+
+@pytest.mark.parametrize(
+    "expected",
+    [
+        {"expected_project_id": str(uuid4())},
+        {"expected_base_version_id": str(uuid4())},
+        {"expected_recipe_hash": "0" * 64},
+    ],
+)
+def test_apply_rejects_another_ui_context_before_modifying_head(phase3_workspace, expected):
+    ws = phase3_workspace
+    preview = _ready_preview(ws)
+    with pytest.raises(SchemaError) as mismatch:
+        ws.preparation.apply_preview(preview.preview_id, **expected)
+    assert mismatch.value.context["reason"] == "preparation_preview_context_mismatch"
+    assert ws.datasets.get(ws.dataset.dataset_id).head_revision == 1
+    assert ws.preparation.get_preview(preview.preview_id).status is PreviewStatus.READY
 
 
 def test_head_change_makes_preview_stale(phase3_workspace) -> None:
@@ -129,8 +152,13 @@ def test_failed_apply_transaction_rolls_back_version_head_and_status(
     with pytest.raises(RuntimeError, match="forced head failure"):
         phase3_workspace.preparation.apply_preview(preview.preview_id)
 
-    assert phase3_workspace.datasets.version_history(phase3_workspace.dataset.dataset_id) == before_versions
+    assert (
+        phase3_workspace.datasets.version_history(phase3_workspace.dataset.dataset_id)
+        == before_versions
+    )
     assert phase3_workspace.datasets.get(phase3_workspace.dataset.dataset_id).head_revision == 1
-    assert phase3_workspace.preparation.get_preview(preview.preview_id).status is PreviewStatus.READY
+    assert (
+        phase3_workspace.preparation.get_preview(preview.preview_id).status is PreviewStatus.READY
+    )
     with phase3_workspace.catalog.connection() as connection:
         assert connection.execute("SELECT count(*) FROM dataset_version_lineage").fetchone()[0] == 0

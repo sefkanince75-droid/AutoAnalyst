@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from datetime import datetime
-from enum import Enum
 import os
-from typing import Any
+import shutil
+import tempfile
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime
+from enum import Enum
+from pathlib import Path
 
 import duckdb
 
-from ..data.schema import DatasetColumn, INTERNAL_ROW_ID, INTERNAL_ROW_ORDER, schema_fingerprint
-from ..data.table_access import TableAccess, VersionTable, _filter_clause
+from ..data.limits import MIB, enforce_free_disk, enforce_shape
+from ..data.schema import INTERNAL_ROW_ID, INTERNAL_ROW_ORDER, DatasetColumn, schema_fingerprint
+from ..data.table_access import TableAccess, _filter_clause
 from ..domain.codec import (
-    FrozenDict,
     SCHEMA_VERSION,
+    FrozenDict,
     decode_typed_label,
     encode_typed_label,
     fingerprint,
@@ -24,9 +27,10 @@ from ..domain.codec import (
     require_uuid,
     utc_now,
 )
-from ..domain.errors import MethodNotApplicableError, ResourceError, SchemaError
+from ..domain.errors import AutoAnalystError, MethodNotApplicableError, ResourceError, SchemaError
 from ..domain.plans import LearningScope, PreparationRecipe, PreparationStep
 from ..domain.results import Artifact
+from ..execution.data_control import JOB_ID, checkpoint
 from ..storage.artifacts import ArtifactStore
 from .operations import OperationId, validate_step
 
@@ -94,25 +98,33 @@ class PreparationPreview:
         object.__setattr__(
             self,
             "append_input_version_ids",
-            tuple(require_uuid(item, "append_input_version_id") for item in self.append_input_version_ids),
+            tuple(
+                require_uuid(item, "append_input_version_id")
+                for item in self.append_input_version_ids
+            ),
         )
         object.__setattr__(
             self, "sample_changes", tuple(freeze_json(item) for item in self.sample_changes)
         )
         object.__setattr__(
-            self, "content_fingerprint", require_sha256(self.content_fingerprint, "content_fingerprint")
+            self,
+            "content_fingerprint",
+            require_sha256(self.content_fingerprint, "content_fingerprint"),
         )
         object.__setattr__(self, "schema_hash", require_sha256(self.schema_hash, "schema_hash"))
         require_utc(self.created_at, "created_at")
         require_utc(self.expires_at, "expires_at")
         if self.expected_head_revision < 0:
             raise ValueError("Preview revision cannot be negative")
-        if min(
-            self.before_row_count,
-            self.after_row_count,
-            self.before_column_count,
-            self.after_column_count,
-        ) < 0:
+        if (
+            min(
+                self.before_row_count,
+                self.after_row_count,
+                self.before_column_count,
+                self.after_column_count,
+            )
+            < 0
+        ):
             raise ValueError("Preview counts cannot be negative")
         if len(set(self.append_input_version_ids)) != len(self.append_input_version_ids):
             raise ValueError("Preview append inputs must be unique")
@@ -148,6 +160,9 @@ class PreparationEngine:
                     {"reason": "train_only_preparation", "step_id": step.step_id}
                 )
         base_version = self.table_access.catalog.get_version(recipe.base_version_id)
+        enforce_shape(base_version.row_count, base_version.column_count)
+        enforce_free_disk(self.artifact_store.workspace_root, 128 * MIB)
+        checkpoint()
         base = self.table_access.resolve(recipe.base_version_id)
         created_at = utc_now()
         require_utc(expires_at, "expires_at")
@@ -155,9 +170,27 @@ class PreparationEngine:
             raise SchemaError({"reason": "preview_expiry_must_be_future"})
 
         connection = duckdb.connect(":memory:")
+        job_id = JOB_ID.get()
+        spill = Path(
+            tempfile.mkdtemp(
+                prefix=f"data-spill-{job_id}-" if job_id else "data-spill-",
+                dir=self.artifact_store.staging_root,
+            )
+        ).resolve()
+        if job_id:
+            from ..execution.data_tasks import atomic_json, task_directory
+
+            atomic_json(
+                task_directory(self.artifact_store.workspace_root, job_id) / "spill.json",
+                {"name": spill.name},
+            )
         staged = None
         try:
             _configure(connection)
+            connection.execute("SET memory_limit = '512MiB'")
+            connection.execute("SET max_temp_directory_size = '256MiB'")
+            connection.execute("SET threads = 1")
+            connection.execute("SET temp_directory = ?", [str(spill)])
             connection.execute(
                 "CREATE TEMP TABLE prep_0 AS SELECT * FROM read_parquet(?)",
                 [str(base.parquet_path)],
@@ -169,15 +202,36 @@ class PreparationEngine:
             append_inputs: list[str] = []
             samples: list[FrozenDict] = []
             for index, step in enumerate(recipe.ordered_steps, start=1):
-                current_table, columns, result, appended = self._execute_step(
-                    connection,
-                    current_table,
-                    f"prep_{index}",
-                    columns,
-                    step,
-                    recipe.base_version_id,
-                )
+                checkpoint()
+                previous_table = current_table
+                try:
+                    if step.operation == "append_rows" and set(
+                        step.parameters["input_version_ids"]
+                    ).intersection(append_inputs):
+                        raise SchemaError({"reason": "duplicate_append_input"})
+                    if step.operation == "append_rows":
+                        total = _count(connection, current_table) + sum(
+                            self.table_access.catalog.get_version(v).row_count
+                            for v in step.parameters["input_version_ids"]
+                        )
+                        enforce_shape(total, sum(not c.is_system for c in columns))
+                    current_table, columns, result, appended = self._execute_step(
+                        connection,
+                        current_table,
+                        f"prep_{index}",
+                        columns,
+                        step,
+                        recipe.base_version_id,
+                    )
+                except AutoAnalystError as exc:
+                    exc.context = freeze_json({**dict(exc.context), "step_position": step.position})
+                    raise
                 step_results.append(result)
+                enforce_shape(
+                    _count(connection, current_table), sum(not c.is_system for c in columns)
+                )
+                if previous_table != current_table:
+                    connection.execute(f"DROP TABLE {_table(previous_table)}")
                 append_inputs.extend(appended)
                 for row_id in result.sample_row_ids:
                     if len(samples) >= 100:
@@ -210,6 +264,7 @@ class PreparationEngine:
                 handle.flush()
                 os.fsync(handle.fileno())
             candidate = self.artifact_store.finalize(staged)
+            checkpoint()
             execution_descriptor = [
                 {
                     "step_position": position,
@@ -267,6 +322,14 @@ class PreparationEngine:
             raise
         finally:
             connection.close()
+            # Validate the final absolute target before Windows recursive cleanup.
+            if (
+                spill.parent == self.artifact_store.staging_root.resolve()
+                and spill.name.startswith("data-spill-")
+                and not spill.is_symlink()
+                and not spill.is_junction()
+            ):
+                shutil.rmtree(spill)
 
     def _execute_step(
         self,
@@ -278,6 +341,12 @@ class PreparationEngine:
         base_version_id: str,
     ) -> tuple[str, tuple[DatasetColumn, ...], StepExecutionResult, tuple[str, ...]]:
         operation = OperationId(step.operation)
+        if operation is OperationId.JOIN_ROWS:
+            from .joins import execute_join
+
+            return execute_join(
+                self, connection, source_table, target_table, columns, step, base_version_id
+            )
         if operation is OperationId.FILTER_ROWS:
             return _filter(connection, source_table, target_table, columns, step)
         if operation is OperationId.DROP_COLUMNS:
@@ -317,7 +386,13 @@ class PreparationEngine:
         before = _count(connection, source_table)
         statements = [f"SELECT * FROM {_table(source_table)}"]
         parameters: list[object] = []
-        next_order = before
+        row_order = _identifier(INTERNAL_ROW_ORDER, columns)
+        next_order = int(
+            connection.execute(
+                f"SELECT COALESCE(MAX({row_order}), -1) + 1 FROM {_table(source_table)}"
+            ).fetchone()[0]
+        )
+        append_start = next_order
         for version_id in input_ids:
             table = self.table_access.resolve(version_id)
             base_dataset = self.table_access.catalog.get_dataset(
@@ -336,7 +411,7 @@ class PreparationEngine:
                 identifier = _identifier(column.physical_name, columns)
                 if column.physical_name == INTERNAL_ROW_ID:
                     selections.append(f"md5(? || ':' || CAST({row_id} AS VARCHAR)) AS {row_id}")
-                    parameters.append(version_id)
+                    parameters.append(base_version_id + ":" + version_id)
                 elif column.physical_name == INTERNAL_ROW_ORDER:
                     selections.append(
                         f"(? + row_number() OVER (ORDER BY {row_order}) - 1)::BIGINT AS {row_order}"
@@ -348,10 +423,11 @@ class PreparationEngine:
             parameters.append(str(table.parquet_path))
             next_order += self.table_access.row_count(version_id)
         connection.execute(
-            f"CREATE TEMP TABLE {_table(target_table)} AS {' UNION ALL '.join(statements)}", parameters
+            f"CREATE TEMP TABLE {_table(target_table)} AS {' UNION ALL '.join(statements)}",
+            parameters,
         )
         after = _count(connection, target_table)
-        sample = _sample_row_ids(connection, target_table, columns, offset=before)
+        sample = _sample_row_ids(connection, target_table, columns, offset=append_start)
         return (
             target_table,
             columns,
@@ -374,7 +450,12 @@ def _filter(connection, source, target, columns, step):
         parameters,
     )
     after = _count(connection, target)
-    return target, columns, StepExecutionResult(step.step_id, before - after, None, sample_row_ids=removed), ()
+    return (
+        target,
+        columns,
+        StepExecutionResult(step.step_id, before - after, None, sample_row_ids=removed),
+        (),
+    )
 
 
 def _drop_columns(connection, source, target, columns, step):
@@ -391,7 +472,12 @@ def _drop_columns(connection, source, target, columns, step):
         f"CREATE TEMP TABLE {_table(target)} AS SELECT {projection} FROM {_table(source)}"
     )
     selected = tuple(replace(column, ordinal=index) for index, column in enumerate(selected))
-    return target, selected, StepExecutionResult(step.step_id, rows, rows * len(dropped), sample_row_ids=sample), ()
+    return (
+        target,
+        selected,
+        StepExecutionResult(step.step_id, rows, rows * len(dropped), sample_row_ids=sample),
+        (),
+    )
 
 
 def _rename_column(connection, source, columns, step):
@@ -399,11 +485,25 @@ def _rename_column(connection, source, columns, step):
     if column.is_system:
         raise SchemaError({"reason": "system_column_cannot_be_renamed"})
     name = str(step.parameters["new_name"]).strip()
-    if any(item.column_id != column.column_id and item.display_name == name for item in columns if not item.is_system):
+    if any(
+        item.column_id != column.column_id and item.display_name == name
+        for item in columns
+        if not item.is_system
+    ):
         raise SchemaError({"reason": "duplicate_column_names", "columns": (name,)})
-    updated = tuple(replace(item, display_name=name) if item.column_id == column.column_id else item for item in columns)
+    updated = tuple(
+        replace(item, display_name=name) if item.column_id == column.column_id else item
+        for item in columns
+    )
     rows = _count(connection, source)
-    return source, updated, StepExecutionResult(step.step_id, rows, 0, sample_row_ids=_sample_row_ids(connection, source, columns)), ()
+    return (
+        source,
+        updated,
+        StepExecutionResult(
+            step.step_id, rows, 0, sample_row_ids=_sample_row_ids(connection, source, columns)
+        ),
+        (),
+    )
 
 
 def _cast_column(connection, source, target, columns, step):
@@ -432,7 +532,17 @@ def _cast_column(connection, source, target, columns, step):
         else item
         for item in columns
     )
-    return target, updated, StepExecutionResult(step.step_id, invalid, invalid, sample_row_ids=_sample_invalid_cast(connection, source, columns, identifier, sql_type)), ()
+    return (
+        target,
+        updated,
+        StepExecutionResult(
+            step.step_id,
+            invalid,
+            invalid,
+            sample_row_ids=_sample_invalid_cast(connection, source, columns, identifier, sql_type),
+        ),
+        (),
+    )
 
 
 def _fill_missing(connection, source, target, columns, step):
@@ -461,7 +571,9 @@ def _fill_missing(connection, source, target, columns, step):
             _require_value_compatible(column, value)
         elif strategy in {"mean", "median"}:
             if not _is_numeric(column):
-                raise SchemaError({"reason": "numeric_fill_required", "column_id": column.column_id})
+                raise SchemaError(
+                    {"reason": "numeric_fill_required", "column_id": column.column_id}
+                )
             aggregate = "avg" if strategy == "mean" else "median"
             value = connection.execute(
                 f"SELECT {aggregate}({identifier}) FROM {_table(source)}"
@@ -473,7 +585,9 @@ def _fill_missing(connection, source, target, columns, step):
                     ORDER BY frequency DESC, CAST({identifier} AS VARCHAR) ASC LIMIT 1"""
             ).fetchone()
             value = value_row[0] if value_row else None
-        resolved[column.column_id] = encode_typed_label(value)
+        resolved[column.column_id] = encode_typed_label(
+            value.isoformat() if isinstance(value, (date, datetime)) else value
+        )
         if value is None:
             warnings.append("fill_value_not_defined")
             expressions[column.column_id] = identifier
@@ -482,26 +596,50 @@ def _fill_missing(connection, source, target, columns, step):
             parameters.append(value)
     projection = _replace_expressions(columns, expressions)
     connection.execute(
-        f"CREATE TEMP TABLE {_table(target)} AS SELECT {projection} FROM {_table(source)}", parameters
+        f"CREATE TEMP TABLE {_table(target)} AS SELECT {projection} FROM {_table(source)}",
+        parameters,
     )
     affected_rows = _unique_count(sample_ids)
-    return target, columns, StepExecutionResult(step.step_id, affected_rows, affected_cells, FrozenDict(resolved), tuple(warnings), tuple(dict.fromkeys(sample_ids))[:100]), ()
+    return (
+        target,
+        columns,
+        StepExecutionResult(
+            step.step_id,
+            affected_rows,
+            affected_cells,
+            FrozenDict(resolved),
+            tuple(warnings),
+            tuple(dict.fromkeys(sample_ids))[:100],
+        ),
+        (),
+    )
 
 
 def _drop_missing(connection, source, target, columns, step):
-    selected = tuple(_user_column(columns, column_id) for column_id in step.parameters["column_ids"])
-    clause = " AND ".join(f"{_identifier(column.physical_name, columns)} IS NOT NULL" for column in selected)
+    selected = tuple(
+        _user_column(columns, column_id) for column_id in step.parameters["column_ids"]
+    )
+    clause = " AND ".join(
+        f"{_identifier(column.physical_name, columns)} IS NOT NULL" for column in selected
+    )
     before = _count(connection, source)
     sample = _sample_where(connection, source, columns, f"NOT ({clause})", [])
     connection.execute(
         f"CREATE TEMP TABLE {_table(target)} AS SELECT * FROM {_table(source)} WHERE {clause}"
     )
     after = _count(connection, target)
-    return target, columns, StepExecutionResult(step.step_id, before - after, None, sample_row_ids=sample), ()
+    return (
+        target,
+        columns,
+        StepExecutionResult(step.step_id, before - after, None, sample_row_ids=sample),
+        (),
+    )
 
 
 def _remove_duplicates(connection, source, target, columns, step):
-    selected = tuple(_user_column(columns, column_id) for column_id in step.parameters["column_ids"])
+    selected = tuple(
+        _user_column(columns, column_id) for column_id in step.parameters["column_ids"]
+    )
     partition = ", ".join(_identifier(column.physical_name, columns) for column in selected)
     order = _identifier(INTERNAL_ROW_ORDER, columns)
     before = _count(connection, source)
@@ -518,7 +656,12 @@ def _remove_duplicates(connection, source, target, columns, step):
             QUALIFY row_number() OVER (PARTITION BY {partition} ORDER BY {order}) = 1"""
     )
     after = _count(connection, target)
-    return target, columns, StepExecutionResult(step.step_id, before - after, None, sample_row_ids=sample), ()
+    return (
+        target,
+        columns,
+        StepExecutionResult(step.step_id, before - after, None, sample_row_ids=sample),
+        (),
+    )
 
 
 def _replace_values(connection, source, target, columns, step):
@@ -557,11 +700,18 @@ def _replace_values(connection, source, target, columns, step):
         f"CREATE TEMP TABLE {_table(target)} AS SELECT {_replace_expression(columns, column.column_id, expression)} FROM {_table(source)}",
         parameters,
     )
-    return target, columns, StepExecutionResult(step.step_id, affected, affected, sample_row_ids=sample), ()
+    return (
+        target,
+        columns,
+        StepExecutionResult(step.step_id, affected, affected, sample_row_ids=sample),
+        (),
+    )
 
 
 def _replace_non_finite(connection, source, target, columns, step):
-    selected = tuple(_user_column(columns, column_id) for column_id in step.parameters["column_ids"])
+    selected = tuple(
+        _user_column(columns, column_id) for column_id in step.parameters["column_ids"]
+    )
     expressions: dict[str, str] = {}
     predicates: list[str] = []
     for column in selected:
@@ -583,7 +733,12 @@ def _replace_non_finite(connection, source, target, columns, step):
     connection.execute(
         f"CREATE TEMP TABLE {_table(target)} AS SELECT {_replace_expressions(columns, expressions)} FROM {_table(source)}"
     )
-    return target, columns, StepExecutionResult(step.step_id, affected_rows, affected_cells, sample_row_ids=sample), ()
+    return (
+        target,
+        columns,
+        StepExecutionResult(step.step_id, affected_rows, affected_cells, sample_row_ids=sample),
+        (),
+    )
 
 
 def _configure(connection):
@@ -701,25 +856,30 @@ def _require_value_compatible(column, value):
         return
     if _is_numeric(column):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise SchemaError({"reason": "typed_value_schema_mismatch", "column_id": column.column_id})
+            raise SchemaError(
+                {"reason": "typed_value_schema_mismatch", "column_id": column.column_id}
+            )
     elif column.semantic_hint == "boolean" or "bool" in column.physical_type.lower():
         if not isinstance(value, bool):
-            raise SchemaError({"reason": "typed_value_schema_mismatch", "column_id": column.column_id})
+            raise SchemaError(
+                {"reason": "typed_value_schema_mismatch", "column_id": column.column_id}
+            )
     elif not isinstance(value, str):
         raise SchemaError({"reason": "typed_value_schema_mismatch", "column_id": column.column_id})
 
 
 def _require_compatible_schema(base, incoming):
-    base_user = tuple(column for column in base if not column.is_system)
-    incoming_user = tuple(column for column in incoming if not column.is_system)
-    base_signature = tuple(
-        (column.column_id, column.physical_name, _normalized_type(column)) for column in base_user
-    )
-    incoming_signature = tuple(
-        (column.column_id, column.physical_name, _normalized_type(column)) for column in incoming_user
-    )
-    if base_signature != incoming_signature:
+    if append_schema_signature(base) != append_schema_signature(incoming):
         raise SchemaError({"reason": "append_schema_incompatible"})
+
+
+def append_schema_signature(columns):
+    """The existing closed append contract: identity, physical name and type in order."""
+    return tuple(
+        (column.column_id, column.physical_name, _normalized_type(column))
+        for column in columns
+        if not column.is_system
+    )
 
 
 def _normalized_type(column):

@@ -24,6 +24,7 @@ class OperationId(str, Enum):
     REPLACE_VALUES = "replace_values"
     REPLACE_NON_FINITE = "replace_non_finite"
     APPEND_ROWS = "append_rows"
+    JOIN_ROWS = "join_rows"
 
 
 FILTER_OPERATORS = frozenset(
@@ -63,6 +64,28 @@ def _definition(
 
 OPERATION_REGISTRY = MappingProxyType(
     {
+        OperationId.JOIN_ROWS.value: _definition(
+            OperationId.JOIN_ROWS,
+            (
+                "right_version_id",
+                "left_key_ids",
+                "right_key_ids",
+                "how",
+                "relationship",
+                "max_output_rows",
+                "max_expansion",
+            ),
+            types={
+                "right_version_id": "uuid",
+                "left_key_ids": "non_empty_uuid_list",
+                "right_key_ids": "non_empty_uuid_list",
+                "how": "inner_or_left",
+                "relationship": "cardinality",
+                "max_output_rows": "bounded_integer",
+                "max_expansion": "bounded_number",
+            },
+            schema_effect="join_right_columns_preserve_source_column_ids",
+        ),
         OperationId.FILTER_ROWS.value: _definition(
             OperationId.FILTER_ROWS,
             ("column_id", "operator"),
@@ -142,7 +165,9 @@ def operation_definition(operation: str) -> OperationDefinition:
     try:
         return OPERATION_REGISTRY[OperationId(operation).value]
     except (ValueError, KeyError) as exc:
-        raise SchemaError({"reason": "unsupported_preparation_operation", "operation": operation}) from exc
+        raise SchemaError(
+            {"reason": "unsupported_preparation_operation", "operation": operation}
+        ) from exc
 
 
 def validate_parameters(operation: str, parameters: FrozenDict | dict[str, Any]) -> FrozenDict:
@@ -159,7 +184,26 @@ def validate_parameters(operation: str, parameters: FrozenDict | dict[str, Any])
         raise SchemaError({"reason": "unknown_operation_parameters", "parameters": unknown})
 
     operation_id = definition.operation_id
-    if operation_id is OperationId.FILTER_ROWS:
+    if operation_id is OperationId.JOIN_ROWS:
+        _uuid(frozen["right_version_id"])
+        left = _uuid_list(frozen["left_key_ids"], "left_key_ids")
+        right = _uuid_list(frozen["right_key_ids"], "right_key_ids")
+        if (
+            len(left) != len(right)
+            or len(left) > 5
+            or len(set(left)) != len(left)
+            or len(set(right)) != len(right)
+            or frozen["how"] not in {"inner", "left"}
+            or frozen["relationship"]
+            not in {"one_to_one", "many_to_one", "one_to_many", "many_to_many"}
+            or type(frozen["max_output_rows"]) is not int
+            or not 1 <= frozen["max_output_rows"] <= 1_000_000
+            or isinstance(frozen["max_expansion"], bool)
+            or not isinstance(frozen["max_expansion"], (int, float))
+            or not 1 <= frozen["max_expansion"] <= 10
+        ):
+            raise SchemaError({"reason": "join.invalid_parameters"})
+    elif operation_id is OperationId.FILTER_ROWS:
         _uuid(frozen["column_id"])
         operator = str(frozen["operator"])
         if operator not in FILTER_OPERATORS:
@@ -169,7 +213,10 @@ def validate_parameters(operation: str, parameters: FrozenDict | dict[str, Any])
             raise SchemaError({"reason": "null_filter_does_not_accept_value"})
         if operator not in {"is_null", "is_not_null"} and not has_value:
             raise SchemaError({"reason": "filter_value_required"})
-        if operator in {"gt", "gte", "lt", "lte", "contains_literal"} and frozen.get("value") is None:
+        if (
+            operator in {"gt", "gte", "lt", "lte", "contains_literal"}
+            and frozen.get("value") is None
+        ):
             raise SchemaError({"reason": "null_only_supports_eq_ne_or_null_operators"})
     elif operation_id is OperationId.RENAME_COLUMN:
         _uuid(frozen["column_id"])
@@ -223,7 +270,8 @@ def validate_parameters(operation: str, parameters: FrozenDict | dict[str, Any])
 
 
 def affected_column_ids(operation: str, parameters: FrozenDict) -> tuple[str, ...]:
-    operation_id = OperationId(operation)
+    # Validate the operation id even when it has no column-scoped parameters.
+    OperationId(operation)
     if "column_id" in parameters:
         return (str(parameters["column_id"]),)
     if "column_ids" in parameters:

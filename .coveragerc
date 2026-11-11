@@ -1,0 +1,9 @@
+[run]
+branch = True
+omit =
+    */autoanalyst/ui/*
+    */autoanalyst/desktop.py
+
+[report]
+show_missing = True
+skip_covered = False

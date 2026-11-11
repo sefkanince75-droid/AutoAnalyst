@@ -31,7 +31,9 @@ def test_display_name_sql_injection_is_never_used_as_identifier(tmp_path) -> Non
         source=b'evil"; DROP TABLE projects; --\nvalue\n',
         original_name="injection.csv",
     )
-    column = next(row for row in catalog.list_columns(imported.version.version_id) if not row["is_system"])
+    column = next(
+        row for row in catalog.list_columns(imported.version.version_id) if not row["is_system"]
+    )
 
     result = TableAccess(catalog, store).selected_columns(
         imported.version.version_id, (column["column_id"],)
@@ -104,3 +106,51 @@ def test_aggregate_duplicates_and_ordered_export(phase3_workspace) -> None:
     assert access.duplicate_rows(version_id, (group["column_id"],)).num_rows == 4
     exported = access.ordered_export(version_id)
     assert exported.column("__aa_internal_row_order__").to_pylist() == [0, 1, 2, 3, 4]
+
+
+def test_paged_preview_preserves_order_projection_and_page_boundaries(phase3_workspace):
+    ws = phase3_workspace
+    access = TableAccess(ws.catalog, ws.store)
+    column = ws.column("group")
+    version_id = ws.imported.version.version_id
+    first = access.page(version_id, (column["column_id"],), limit=2, offset=0)
+    second = access.page(version_id, (column["column_id"],), limit=2, offset=2)
+    last = access.page(version_id, (column["column_id"],), limit=2, offset=4)
+    beyond = access.page(version_id, (column["column_id"],), limit=2, offset=5)
+    assert first.column_names == [column["physical_name"]]
+    assert first.column(0).to_pylist() == ["a", "a"]
+    assert second.column(0).to_pylist() == ["b", "b"]
+    assert last.column(0).to_pylist() == ["c"]
+    assert beyond.num_rows == 0
+    assert access.page(version_id, (column["column_id"],), limit=2, offset=2).equals(second)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"limit": 0},
+        {"limit": -1},
+        {"limit": 501},
+        {"limit": True},
+        {"limit": "2; DROP TABLE projects"},
+        {"offset": -1},
+        {"offset": 0.5},
+        {"offset": True},
+        {"offset": 2**63},
+    ],
+)
+def test_paged_preview_rejects_unbounded_or_invalid_requests(phase3_workspace, arguments):
+    ws = phase3_workspace
+    with pytest.raises(SchemaError):
+        TableAccess(ws.catalog, ws.store).page(
+            ws.imported.version.version_id, (ws.column("group")["column_id"],), **arguments
+        )
+
+
+def test_paged_preview_rejects_empty_duplicate_and_unknown_columns(phase3_workspace):
+    ws = phase3_workspace
+    access = TableAccess(ws.catalog, ws.store)
+    column_id = ws.column("group")["column_id"]
+    for columns in ((), (column_id, column_id), ("not-a-catalog-column",), (column_id,) * 51):
+        with pytest.raises(SchemaError):
+            access.page(ws.imported.version.version_id, columns)

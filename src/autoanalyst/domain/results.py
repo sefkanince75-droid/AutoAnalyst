@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-import math
 
-from .codec import FrozenDict, SCHEMA_VERSION, freeze_json, require_sha256, require_utc, require_uuid
+from .codec import (
+    SCHEMA_VERSION,
+    FrozenDict,
+    freeze_json,
+    require_sha256,
+    require_utc,
+    require_uuid,
+)
 from .plans import AnalysisModuleId
 
 
@@ -46,7 +53,11 @@ class Finding:
         object.__setattr__(self, "finding_id", require_uuid(self.finding_id, "finding_id"))
         object.__setattr__(self, "severity", FindingSeverity(self.severity))
         object.__setattr__(self, "parameters", freeze_json(self.parameters))
-        object.__setattr__(self, "affected_column_ids", tuple(require_uuid(item, "affected_column_id") for item in self.affected_column_ids))
+        object.__setattr__(
+            self,
+            "affected_column_ids",
+            tuple(require_uuid(item, "affected_column_id") for item in self.affected_column_ids),
+        )
         if not self.code:
             raise ValueError("Finding code is required")
 
@@ -73,7 +84,11 @@ class Metric:
         if not self.name:
             raise ValueError("Metric name is required")
         if self.value_state is MetricValueState.FINITE:
-            if self.value is None or isinstance(self.value, bool) or not math.isfinite(float(self.value)):
+            if (
+                self.value is None
+                or isinstance(self.value, bool)
+                or not math.isfinite(float(self.value))
+            ):
                 raise ValueError("finite metrics require a finite numeric value")
         elif self.value is not None:
             raise ValueError("Non-finite metric states must not carry a raw numeric value")
@@ -98,7 +113,9 @@ class ResultTable:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "table_id", require_uuid(self.table_id, "table_id"))
-        object.__setattr__(self, "rows", tuple(tuple(freeze_json(item) for item in row) for row in self.rows))
+        object.__setattr__(
+            self, "rows", tuple(tuple(freeze_json(item) for item in row) for row in self.rows)
+        )
         if any(len(row) != len(self.columns) for row in self.rows):
             raise ValueError("Every result table row must match the column count")
 
@@ -135,10 +152,17 @@ class Artifact:
 
     def __post_init__(self) -> None:
         for field_name in ("artifact_id", "project_id", "owner_run_id"):
-            object.__setattr__(self, field_name, require_uuid(getattr(self, field_name), field_name))
+            object.__setattr__(
+                self, field_name, require_uuid(getattr(self, field_name), field_name)
+            )
         object.__setattr__(self, "sha256", require_sha256(self.sha256, "sha256"))
         require_utc(self.created_at, "created_at")
-        if self.byte_size < 0 or not self.relative_path or self.relative_path.startswith(("/", "\\")) or ".." in self.relative_path.split("/"):
+        if (
+            self.byte_size < 0
+            or not self.relative_path
+            or self.relative_path.startswith(("/", "\\"))
+            or ".." in self.relative_path.split("/")
+        ):
             raise ValueError("Artifact requires a safe relative path and non-negative byte_size")
 
 
@@ -156,8 +180,14 @@ class Report:
 
     def __post_init__(self) -> None:
         for field_name in ("report_id", "root_result_id", "artifact_id"):
-            object.__setattr__(self, field_name, require_uuid(getattr(self, field_name), field_name))
-        object.__setattr__(self, "render_options_hash", require_sha256(self.render_options_hash, "render_options_hash"))
+            object.__setattr__(
+                self, field_name, require_uuid(getattr(self, field_name), field_name)
+            )
+        object.__setattr__(
+            self,
+            "render_options_hash",
+            require_sha256(self.render_options_hash, "render_options_hash"),
+        )
         require_utc(self.created_at, "created_at")
 
 
@@ -184,4 +214,8 @@ class AnalysisResult:
         object.__setattr__(self, "outcome", ResultOutcome(self.outcome))
         for field_name in ("methodology", "sample_summary", "provenance"):
             object.__setattr__(self, field_name, freeze_json(getattr(self, field_name)))
-        object.__setattr__(self, "related_result_ids", tuple(require_uuid(item, "related_result_id") for item in self.related_result_ids))
+        object.__setattr__(
+            self,
+            "related_result_ids",
+            tuple(require_uuid(item, "related_result_id") for item in self.related_result_ids),
+        )

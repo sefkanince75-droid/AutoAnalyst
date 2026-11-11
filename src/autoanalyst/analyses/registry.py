@@ -8,7 +8,6 @@ from ..domain.errors import DependencyError, SchemaError
 from ..domain.plans import AnalysisModuleId
 from .contract import AnalysisModule
 
-
 ALLOWED_MODULE_IDS = frozenset(item.value for item in AnalysisModuleId)
 
 
@@ -36,8 +35,12 @@ class AnalysisRegistry:
         try:
             normalized = AnalysisModuleId(module_id).value
         except ValueError as exc:
-            raise SchemaError({"module_id": str(module_id), "reason": "module_not_allowed"}) from exc
+            raise SchemaError(
+                {"module_id": str(module_id), "reason": "module_not_allowed"}
+            ) from exc
         try:
             return self._modules[normalized]
         except KeyError as exc:
-            raise DependencyError({"module_id": normalized, "reason": "module_not_registered"}) from exc
+            raise DependencyError(
+                {"module_id": normalized, "reason": "module_not_registered"}
+            ) from exc

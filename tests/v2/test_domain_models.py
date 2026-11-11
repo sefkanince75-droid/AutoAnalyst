@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
-from datetime import datetime, timezone
 import inspect
+from dataclasses import FrozenInstanceError
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -13,8 +13,7 @@ from autoanalyst.domain.errors import DataError, ErrorCode
 from autoanalyst.domain.plans import AnalysisModuleId, AnalysisSpec, ResourceBudget
 from autoanalyst.domain.results import AnalysisResult, Metric, MetricValueState, ResultOutcome
 
-
-NOW = datetime(2026, 2, 3, tzinfo=timezone.utc)
+NOW = datetime(2026, 2, 3, tzinfo=UTC)
 SHA = "a" * 64
 
 
@@ -45,7 +44,7 @@ def test_invalid_binary_analysis_spec_without_exactly_one_target_is_rejected() -
             project_id=str(uuid4()),
             module_id=AnalysisModuleId.BINARY_CLASSIFICATION,
             module_version="2.0",
-            operation="train",
+            operation="train_validate",
             input_version_id=str(uuid4()),
             column_roles=(_role(ColumnUsage.FEATURE),),
             parameters=FrozenDict(),

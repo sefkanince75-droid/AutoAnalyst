@@ -3,5 +3,13 @@
 from .ingest import CSVIngestor, IngestionResult
 from .schema import DatasetColumn
 from .table_access import TableAccess, TableFilter
+from .xlsx_ingest import XLSXIngestor
 
-__all__ = ["CSVIngestor", "DatasetColumn", "IngestionResult", "TableAccess", "TableFilter"]
+__all__ = [
+    "CSVIngestor",
+    "DatasetColumn",
+    "IngestionResult",
+    "TableAccess",
+    "TableFilter",
+    "XLSXIngestor",
+]

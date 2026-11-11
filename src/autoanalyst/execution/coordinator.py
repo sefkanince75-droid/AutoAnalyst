@@ -1,0 +1,419 @@
+"""Run lifecycle coordinator independent from Streamlit and presentation."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import time
+from multiprocessing import get_context
+from pathlib import Path
+from uuid import uuid4
+
+import psutil
+
+from ..analyses.contract import AnalysisModule, ExecutionContext, ResultDraft
+from ..domain.codec import fingerprint, utc_now
+from ..domain.errors import (
+    AutoAnalystError,
+    CancellationError,
+    ResourceError,
+    SchemaError,
+    UnexpectedExecutionError,
+)
+from ..domain.plans import AnalysisModuleId, AnalysisSpec
+from ..domain.results import AnalysisResult, Artifact
+from ..domain.runs import AnalysisRun, RunKind, RunStatus
+from ..environment import runtime_environment_manifest
+from ..storage.binary import BinaryStore, holdout_selection_hash
+from ..storage.runs import RunStore
+from .budget import enforce_budget
+from .lease import activate_worker, clear_stale_lease, owned_process, release_worker, reserve_worker
+from .protocol import EventCancellationToken, EventKind, ProgressCallback, ProgressEvent
+from .recovery import reconcile_interrupted_runs, reconcile_worker_run
+
+_TERMINAL = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}
+
+
+class ExecutionCoordinator:
+    """Owns run state transitions and the single heavy-worker slot."""
+
+    def __init__(self, store: RunStore) -> None:
+        self.store = store
+
+    def create_run(
+        self,
+        spec: AnalysisSpec,
+        *,
+        request_key: str,
+        parent_run_id: str | None = None,
+        environment: dict[str, object] | None = None,
+    ) -> AnalysisRun:
+        persisted_spec = self.store.insert_spec(spec)
+        environment_manifest = (
+            environment if environment is not None else runtime_environment_manifest()
+        )
+        input_version = self.store.catalog.get_version(persisted_spec.input_version_id)
+        input_fingerprint = fingerprint(
+            {
+                "input_version_id": persisted_spec.input_version_id,
+                "input_content_fingerprint": input_version.content_fingerprint,
+                "spec_hash": persisted_spec.spec_hash,
+                "module_version": persisted_spec.module_version,
+                "environment": environment_manifest,
+            }
+        )
+        run = AnalysisRun(
+            run_id=str(uuid4()),
+            project_id=persisted_spec.project_id,
+            kind=RunKind.ANALYSIS,
+            request_key=request_key,
+            input_fingerprint=input_fingerprint,
+            status=RunStatus.PENDING,
+            created_at=utc_now(),
+            spec_id=persisted_spec.spec_id,
+            parent_run_id=parent_run_id,
+            environment_manifest=environment_manifest,
+        )
+        return self.store.insert_run(run)
+
+    def execute_inline(
+        self,
+        run_id: str,
+        module: AnalysisModule,
+        *,
+        cancellation_event: object,
+        progress: ProgressCallback | None = None,
+    ) -> AnalysisRun:
+        run = self.store.get_run(run_id)
+        if run.status is RunStatus.COMPLETED:
+            return run
+        if run.status is not RunStatus.PENDING:
+            raise UnexpectedExecutionError(
+                {"reason": "run_not_pending", "run_id": run_id, "status": run.status.value}
+            )
+        if run.spec_id is None:
+            raise UnexpectedExecutionError(
+                {"reason": "analysis_run_missing_spec", "run_id": run_id}
+            )
+        spec = self.store.get_spec(run.spec_id)
+        description = module.describe()
+        if (
+            description.module_id != spec.module_id
+            or description.module_version != spec.module_version
+        ):
+            raise UnexpectedExecutionError({"reason": "module_spec_mismatch", "run_id": run_id})
+        issues = module.validate(spec)
+        if issues:
+            raise UnexpectedExecutionError(
+                {
+                    "reason": "analysis_spec_validation_failed",
+                    "codes": tuple(item.code for item in issues),
+                }
+            )
+        module.check_applicability(spec).require_runnable()
+        estimate = module.estimate_resources(spec)
+        enforce_budget(estimate, spec.resource_budget)
+
+        running = self.store.transition(run_id, status=RunStatus.RUNNING)
+        self.store.append_event(run_id, EventKind.STARTED.value, stage="run")
+        token = EventCancellationToken(cancellation_event)
+
+        def emit(event: ProgressEvent) -> None:
+            token.raise_if_cancelled()
+            self.store.append_event(
+                run_id,
+                event.kind.value,
+                stage=event.stage,
+                payload={"fraction": event.fraction, **dict(event.payload)},
+            )
+            if progress is not None:
+                progress(event)
+
+        def context_progress(stage: str, fraction: float, payload) -> None:
+            emit(ProgressEvent(EventKind.PROGRESS, stage, fraction, payload))
+
+        context = ExecutionContext(
+            run_id=running.run_id,
+            input_version_id=spec.input_version_id,
+            seed=spec.seed,
+            cancellation=token,
+            environment=running.environment_manifest,
+            resource_budget=spec.resource_budget,
+            methodology_version=spec.module_version,
+            deadline_monotonic=time.monotonic() + spec.resource_budget.max_duration_seconds,
+            progress=context_progress,
+        )
+        try:
+            emit(ProgressEvent(EventKind.PROGRESS, "analysis", 0.0))
+            holdout_training_run_id = self._start_final_holdout_access(spec, run_id)
+            draft = module.run(spec, context)
+            token.raise_if_cancelled()
+            if draft.artifacts:
+                self._register_artifacts(draft.artifacts, run_id)
+            result = _result_from_draft(run_id, spec, draft)
+            completed = self.store.publish_result(
+                run_id,
+                result,
+                holdout_training_run_id=holdout_training_run_id,
+            )
+            self.store.append_event(run_id, EventKind.COMPLETED.value, stage="run")
+            if progress is not None:
+                progress(ProgressEvent(EventKind.COMPLETED, "run", 1.0))
+            return completed
+        except CancellationError:
+            current = self.store.get_run(run_id)
+            if current.status in {RunStatus.PENDING, RunStatus.RUNNING}:
+                self.store.transition(run_id, status=RunStatus.CANCELLED)
+                self.store.append_event(run_id, EventKind.CANCELLED.value, stage="run")
+            raise
+        except AutoAnalystError as exc:
+            current = self.store.get_run(run_id)
+            if current.status is RunStatus.RUNNING:
+                self.store.transition(run_id, status=RunStatus.FAILED, error_code=exc.code.value)
+                self.store.append_event(
+                    run_id,
+                    EventKind.FAILED.value,
+                    stage="run",
+                    payload={
+                        "error_code": exc.code.value,
+                        "reason": str(exc.context.get("reason", "")),
+                    },
+                )
+            raise
+        except Exception as exc:
+            current = self.store.get_run(run_id)
+            if current.status is RunStatus.RUNNING:
+                self.store.transition(
+                    run_id, status=RunStatus.FAILED, error_code="unexpected_execution"
+                )
+                self.store.append_event(
+                    run_id,
+                    EventKind.FAILED.value,
+                    stage="run",
+                    payload={
+                        "error_code": "unexpected_execution",
+                        "exception_type": type(exc).__name__,
+                    },
+                )
+            raise UnexpectedExecutionError(
+                {"reason": "analysis_module_crashed", "exception_type": type(exc).__name__}
+            ) from exc
+
+    def _start_final_holdout_access(self, spec: AnalysisSpec, final_run_id: str) -> str | None:
+        """Write the irreversible final-selection lock before any test membership is read."""
+        if (
+            spec.module_id
+            not in {
+                AnalysisModuleId.BINARY_CLASSIFICATION,
+                AnalysisModuleId.REGRESSION,
+                AnalysisModuleId.MULTICLASS_CLASSIFICATION,
+            }
+            or spec.operation != "final_evaluate"
+        ):
+            return None
+        training_run_id = str(spec.parameters["training_run_id"])
+        training_result = self.store.result_for_run(training_run_id)
+        if training_result is None:
+            return None
+        original_run = self.store.get_run(training_run_id)
+        original_spec = self.store.get_spec(original_run.spec_id)
+        if (
+            original_run.project_id != spec.project_id
+            or original_spec.module_id != spec.module_id
+            or original_spec.input_version_id != spec.input_version_id
+            or original_spec.operation != "train_validate"
+        ):
+            raise SchemaError({"reason": "binary.audit_context"})
+        selection_hash = holdout_selection_hash(training_run_id, training_result.provenance)
+        BinaryStore(self.store.catalog).start_holdout_access(
+            training_run_id, final_run_id, selection_hash
+        )
+        return training_run_id
+
+    def _register_artifacts(self, artifacts: tuple[Artifact, ...], run_id: str) -> None:
+        with self.store.catalog.transaction() as connection:
+            for artifact in artifacts:
+                if artifact.owner_run_id != run_id:
+                    raise UnexpectedExecutionError(
+                        {"reason": "artifact_run_mismatch", "artifact_id": artifact.artifact_id}
+                    )
+                connection.execute(
+                    """INSERT INTO artifacts
+                       (artifact_id, project_id, owner_run_id, kind, relative_path, media_type,
+                        byte_size, sha256, format_version, created_at, schema_version)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        artifact.artifact_id,
+                        artifact.project_id,
+                        artifact.owner_run_id,
+                        artifact.kind,
+                        artifact.relative_path,
+                        artifact.media_type,
+                        artifact.byte_size,
+                        artifact.sha256,
+                        artifact.format_version,
+                        artifact.created_at.isoformat().replace("+00:00", "Z"),
+                        artifact.schema_version,
+                    ),
+                )
+
+    def start_worker_process(self, run_id: str, workspace: str | Path) -> subprocess.Popen[bytes]:
+        """Launch one owned worker while retaining all SQLite publication in this process."""
+        run = self.store.get_run(run_id)
+        if run.status is not RunStatus.PENDING or run.spec_id is None:
+            raise UnexpectedExecutionError(
+                {"reason": "run_not_pending", "run_id": run_id, "status": run.status.value}
+            )
+        workspace_path = Path(workspace).resolve()
+        reconcile_interrupted_runs(self.store, workspace_path)
+        clear_stale_lease(workspace_path)
+        self._cancel_path(run_id, workspace_path).unlink(missing_ok=True)
+        spec = self.store.get_spec(run.spec_id)
+        try:
+            reserve_worker(workspace_path, run_id)
+            self.store.transition(run_id, status=RunStatus.RUNNING)
+            self.store.append_event(run_id, EventKind.STARTED.value, stage="worker")
+            self._start_final_holdout_access(spec, run_id)
+            command = [
+                sys.executable,
+                "-m",
+                "autoanalyst.execution.worker",
+                "--workspace",
+                str(workspace_path),
+                "--run-id",
+                run_id,
+            ]
+            env = os.environ.copy()
+            if getattr(sys, "frozen", False):
+                env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+            src_root = str(Path(__file__).resolve().parents[2])
+            env["PYTHONPATH"] = src_root + (
+                os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+            )
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=env,
+            )
+            activate_worker(workspace_path, run_id, process.pid)
+            return process
+        except Exception as exc:
+            release_worker(workspace_path, run_id)
+            current = self.store.get_run(run_id)
+            if current.status in {RunStatus.PENDING, RunStatus.RUNNING}:
+                code = exc.code.value if isinstance(exc, AutoAnalystError) else "resource_error"
+                self.store.transition(run_id, status=RunStatus.FAILED, error_code=code)
+                self.store.append_event(
+                    run_id,
+                    EventKind.FAILED.value,
+                    stage="worker_start",
+                    payload={"error_code": code, "exception_type": type(exc).__name__},
+                )
+            if isinstance(exc, AutoAnalystError):
+                raise
+            raise ResourceError(
+                {"reason": "worker_start_failed", "exception_type": type(exc).__name__}
+            ) from exc
+
+    def reconcile_worker(self, run_id: str, workspace: str | Path) -> AnalysisRun:
+        reconcile_worker_run(self.store, workspace, run_id)
+        return self.store.get_run(run_id)
+
+    def request_cancel(
+        self,
+        run_id: str,
+        workspace: str | Path,
+        *,
+        cooperative_grace_seconds: float = 3.0,
+        terminate_grace_seconds: float = 1.5,
+    ) -> None:
+        """Cancel a run, escalating only against the process proven to own its lease."""
+        run = self.store.get_run(run_id)
+        if run.status in _TERMINAL:
+            return
+        workspace_path = Path(workspace).resolve()
+        path = self._cancel_path(run_id, workspace_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("cancel\n", encoding="utf-8")
+        self.store.append_event(run_id, "cancel_requested", stage="run")
+
+        if run.status is RunStatus.PENDING:
+            self._finish_cancel_if_active(run_id)
+            release_worker(workspace_path, run_id)
+            return
+
+        process = owned_process(workspace_path, run_id)
+        if process is None:
+            reconcile_worker_run(self.store, workspace_path, run_id)
+            self._finish_cancel_if_active(run_id)
+            release_worker(workspace_path, run_id)
+            return
+
+        deadline = time.monotonic() + max(0.0, cooperative_grace_seconds)
+        while time.monotonic() < deadline:
+            if not _process_alive(process):
+                reconcile_worker_run(self.store, workspace_path, run_id)
+                release_worker(workspace_path, run_id, pid=process.pid)
+                return
+            current = self.store.get_run(run_id)
+            if current.status in _TERMINAL:
+                release_worker(workspace_path, run_id, pid=process.pid)
+                return
+            time.sleep(0.05)
+
+        if _process_alive(process):
+            try:
+                process.terminate()
+                process.wait(timeout=max(0.0, terminate_grace_seconds))
+            except psutil.TimeoutExpired:
+                try:
+                    process.kill()
+                    process.wait(timeout=0.5)
+                except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+                    pass
+            except psutil.NoSuchProcess:
+                pass
+        reconcile_worker_run(self.store, workspace_path, run_id)
+        self._finish_cancel_if_active(run_id)
+        release_worker(workspace_path, run_id, pid=process.pid)
+
+    def _finish_cancel_if_active(self, run_id: str) -> None:
+        current = self.store.get_run(run_id)
+        if current.status not in {RunStatus.PENDING, RunStatus.RUNNING}:
+            return
+        self.store.transition(run_id, status=RunStatus.CANCELLED)
+        self.store.append_event(run_id, EventKind.CANCELLED.value, stage="run")
+
+    @staticmethod
+    def _cancel_path(run_id: str, workspace: Path) -> Path:
+        return workspace / "staging" / f"cancel-{run_id}.flag"
+
+
+def new_cancellation_event():
+    return get_context("spawn").Event()
+
+
+def _process_alive(process: psutil.Process) -> bool:
+    try:
+        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return False
+
+
+def _result_from_draft(run_id: str, spec: AnalysisSpec, draft: ResultDraft) -> AnalysisResult:
+    return AnalysisResult(
+        result_id=str(uuid4()),
+        run_id=run_id,
+        module_id=spec.module_id,
+        outcome=draft.outcome,
+        metrics=draft.metrics,
+        findings=draft.findings,
+        tables=draft.tables,
+        charts=draft.charts,
+        methodology=draft.methodology,
+        sample_summary=draft.sample_summary,
+        provenance=draft.provenance,
+    )

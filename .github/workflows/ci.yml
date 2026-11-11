@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main, v2-completion, 'codex/**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, py3.12)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.22"
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify frozen dependency graph
+        run: uv lock --check
+      - name: Sync development environment
+        run: uv sync --frozen --group dev
+      - name: Install browser for real UI startup regression tests
+        run: uv run --frozen playwright install --with-deps chromium
+      - name: Ruff lint
+        if: runner.os == 'Linux'
+        run: uv run ruff check src/autoanalyst tests/v2 tools
+      - name: Ruff format
+        if: runner.os == 'Linux'
+        run: uv run ruff format --check src/autoanalyst tests/v2 tools
+      - name: Type check core contracts
+        run: >-
+          uv run mypy
+          src/autoanalyst/domain
+          src/autoanalyst/analyses/contract.py
+          src/autoanalyst/application
+          src/autoanalyst/execution/protocol.py
+          src/autoanalyst/execution/data_control.py
+          src/autoanalyst/execution/data_tasks.py
+          src/autoanalyst/execution/data_worker.py
+      - name: Architecture boundaries
+        if: runner.os == 'Linux'
+        run: uv run pytest -q tests/v2/test_architecture_boundaries.py
+      - name: Compile
+        run: uv run python -m compileall -q src app.py legacy_app.py
+      - name: Run tests
+        if: runner.os == 'Windows'
+        run: uv run pytest -q
+      - name: Backend branch coverage gate
+        if: runner.os == 'Linux'
+        run: >-
+          uv run pytest -q
+          --cov=autoanalyst
+          --cov-config=.coveragerc
+          --cov-branch
+          --cov-report=term-missing
+          --cov-fail-under=80
+      - name: Critical domain preparation holdout coverage gate
+        if: runner.os == 'Linux'
+        run: >-
+          uv run pytest -q tests/v2
+          --cov=autoanalyst.domain
+          --cov=autoanalyst.preparation
+          --cov=autoanalyst.application.preparation
+          --cov=autoanalyst.analyses.preparation
+          --cov=autoanalyst.storage.binary
+          --cov-config=.coveragerc
+          --cov-branch
+          --cov-report=term-missing
+          --cov-fail-under=90
+      - name: Build wheel and sdist
+        run: uv run python -m build
+      - name: Export frozen runtime requirements
+        run: uv export --frozen --no-dev --no-emit-project --output-file build/runtime-requirements.txt
+      - name: Verify installed wheel outside the source tree
+        shell: pwsh
+        run: |
+          $wheel = (Get-ChildItem dist/autoanalyst-*.whl | Select-Object -First 1).FullName
+          $wheelDigest = (Get-FileHash -LiteralPath $wheel -Algorithm SHA256).Hash.ToLowerInvariant()
+          $wheelStage = Join-Path "build/wheel-check" $wheelDigest
+          New-Item -ItemType Directory -Force -Path $wheelStage | Out-Null
+          $checkedWheel = Join-Path $wheelStage (Split-Path $wheel -Leaf)
+          Copy-Item -LiteralPath $wheel -Destination $checkedWheel -Force
+          uv run --no-project --python 3.12 --with-requirements build/runtime-requirements.txt --with "$checkedWheel" python -I -m autoanalyst.desktop --self-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Desktop self-test
+        run: uv run python -m autoanalyst.desktop --self-test

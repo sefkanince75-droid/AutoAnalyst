@@ -8,7 +8,6 @@ from uuid import UUID, uuid4, uuid5
 from ..domain.codec import fingerprint, require_uuid
 from ..domain.errors import SchemaError
 
-
 INTERNAL_ROW_ID = "__aa_internal_row_id__"
 INTERNAL_ROW_ORDER = "__aa_internal_row_order__"
 INTERNAL_NAMES = frozenset({INTERNAL_ROW_ID, INTERNAL_ROW_ORDER})
@@ -84,7 +83,9 @@ def build_columns(
     )
     columns = system + user_columns
     physical_names = tuple(column.physical_name for column in columns)
-    if len(set(physical_names)) != len(physical_names) or not INTERNAL_NAMES.issubset(physical_names):
+    if len(set(physical_names)) != len(physical_names) or not INTERNAL_NAMES.issubset(
+        physical_names
+    ):
         raise SchemaError({"reason": "internal_column_collision"})
     return columns
 
